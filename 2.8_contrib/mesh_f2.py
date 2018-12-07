@@ -49,21 +49,22 @@ from bpy_extras import view3d_utils
 def get_uv_layer(ob, bm, mat_index):
     uv = None
     uv_layer = None
-    if not ob.material_slots:
+    if ob.material_slots:
         me = ob.data
-        if me.uv_textures:
-            uv = me.uv_textures.active.name
-    else:
-        mat = ob.material_slots[mat_index].material
-        if mat is not None:
-            slot = mat.texture_slots[mat.active_texture_index]
-            if slot and slot.uv_layer:
-                uv = slot.uv_layer
-            else:
-                for tex_slot in mat.texture_slots:
-                    if tex_slot and tex_slot.uv_layer:
-                        uv = tex_slot.uv_layer
-                        break
+        if me.uv_layers:
+            uv = me.uv_layers.active.name
+    # 'material_slots' is deprecated (Blender Internal)
+    # else:
+    #     mat = ob.material_slots[mat_index].material
+    #     if mat is not None:
+    #         slot = mat.texture_slots[mat.active_texture_index]
+    #         if slot and slot.uv_layer:
+    #             uv = slot.uv_layer
+    #         else:
+    #             for tex_slot in mat.texture_slots:
+    #                 if tex_slot and tex_slot.uv_layer:
+    #                     uv = tex_slot.uv_layer
+    #                     break
     if uv:
         uv_layer = bm.loops.layers.uv.get(uv)
 
@@ -360,11 +361,11 @@ def expand_vert(self, context, event):
 
     # Compare distance in 2d between mouse and edges middle points
     screen_pos_va = view3d_utils.location_3d_to_region_2d(region, region_3d,
-                                                          ob.matrix_world * v_active.co)
+                                                          ob.matrix_world @ v_active.co)
     screen_pos_v1 = view3d_utils.location_3d_to_region_2d(region, region_3d,
-                                                          ob.matrix_world * c_verts[0].co)
+                                                          ob.matrix_world @ c_verts[0].co)
     screen_pos_v2 = view3d_utils.location_3d_to_region_2d(region, region_3d,
-                                                          ob.matrix_world * c_verts[1].co)
+                                                          ob.matrix_world @ c_verts[1].co)
 
     mid_pos_v1 = Vector(((screen_pos_va[0] + screen_pos_v1[0]) / 2, (screen_pos_va[1] + screen_pos_v1[1]) / 2))
     mid_pos_V2 = Vector(((screen_pos_va[0] + screen_pos_v2[0]) / 2, (screen_pos_va[1] + screen_pos_v2[1]) / 2))
