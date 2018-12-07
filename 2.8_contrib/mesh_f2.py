@@ -482,31 +482,31 @@ def checkforconnected(conection):
 # autograb preference in addons panel
 class F2AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
-    adjustuv = bpy.props.BoolProperty(
+    adjustuv : bpy.props.BoolProperty(
         name="Adjust UV",
         description="Automatically update UV unwrapping",
         default=False)
-    autograb = bpy.props.BoolProperty(
+    autograb : bpy.props.BoolProperty(
         name="Auto Grab",
         description="Automatically puts a newly created vertex in grab mode",
         default=True)
-    extendvert = bpy.props.BoolProperty(
+    extendvert : bpy.props.BoolProperty(
         name="Enable Extend Vert",
         description="Anables a way to build tris and quads by adding verts",
         default=False)
-    quad_from_e_mat = bpy.props.BoolProperty(
+    quad_from_e_mat : bpy.props.BoolProperty(
         name="Quad From Edge",
         description="Use active material for created face instead of close one",
         default=True)
-    quad_from_v_mat = bpy.props.BoolProperty(
+    quad_from_v_mat : bpy.props.BoolProperty(
         name="Quad From Vert",
         description="Use active material for created face instead of close one",
         default=True)
-    tris_from_v_mat = bpy.props.BoolProperty(
+    tris_from_v_mat : bpy.props.BoolProperty(
         name="Tris From Vert",
         description="Use active material for created face instead of close one",
         default=True)
-    ngons_v_mat = bpy.props.BoolProperty(
+    ngons_v_mat : bpy.props.BoolProperty(
         name="Ngons",
         description="Use active material for created face instead of close one",
         default=True)
