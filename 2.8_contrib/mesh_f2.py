@@ -1,4 +1,4 @@
-# Updated for 2.8
+# Updated for 2.8 jan 5 2019
 
 # ##### BEGIN GPL LICENSE BLOCK #####
 #
@@ -73,7 +73,7 @@ def get_uv_layer(ob, bm, mat_index):
 
 # create a face from a single selected edge
 def quad_from_edge(bm, edge_sel, context, event):
-    addon_prefs = context.user_preferences.addons[__name__].preferences
+    addon_prefs = context.preferences.addons[__name__].preferences
     ob = context.active_object
     region = context.region
     region_3d = context.space_data.region_3d
@@ -204,7 +204,7 @@ def quad_from_edge(bm, edge_sel, context, event):
 
 # create a face from a single selected vertex, if it is an open vertex
 def quad_from_vertex(bm, vert_sel, context, event):
-    addon_prefs = context.user_preferences.addons[__name__].preferences
+    addon_prefs = context.preferences.addons[__name__].preferences
     ob = context.active_object
     me = ob.data
     region = context.region
@@ -327,7 +327,7 @@ def quad_from_vertex(bm, vert_sel, context, event):
 
 
 def expand_vert(self, context, event):
-    addon_prefs = context.user_preferences.addons[__name__].preferences
+    addon_prefs = context.preferences.addons[__name__].preferences
     ob = context.active_object
     obj = bpy.context.object
     me = obj.data
@@ -544,7 +544,7 @@ class MeshF2(bpy.types.Operator):
     def usequad(self, bm, sel, context, event):
         quad_from_vertex(bm, sel, context, event)
         if __name__ != '__main__':
-            addon_prefs = context.user_preferences.addons[__name__].preferences
+            addon_prefs = context.preferences.addons[__name__].preferences
             if addon_prefs.autograb:
                 bpy.ops.transform.translate('INVOKE_DEFAULT')
 
@@ -555,14 +555,14 @@ class MeshF2(bpy.types.Operator):
             # original 'Make Edge/Face' behaviour
             try:
                 bpy.ops.mesh.edge_face_add('INVOKE_DEFAULT')
-                addon_prefs = context.user_preferences.addons[__name__].preferences
+                addon_prefs = context.preferences.addons[__name__].preferences
                 if addon_prefs.ngons_v_mat:
                     bpy.ops.object.material_slot_assign()
             except:
                 return {'CANCELLED'}
         elif len(sel) == 1:
             # single vertex selected -> mirror vertex and create new face
-            addon_prefs = context.user_preferences.addons[__name__].preferences
+            addon_prefs = context.preferences.addons[__name__].preferences
             if addon_prefs.extendvert:
                 if checkforconnected('faces') in [2]:
                     if checkforconnected('edges') in [3]:
