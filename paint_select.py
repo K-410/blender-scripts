@@ -96,8 +96,7 @@ def register():
     bpy.utils.register_class(VIEW3D_OT_paint_select)
 
     wm = bpy.context.window_manager
-    km = wm.keyconfigs.addon.keymaps.new(
-        name='3D View', space_type='VIEW_3D')
+    km = wm.keyconfigs.addon.keymaps.new(name='Mesh')
 
     kmi = km.keymap_items.new(
         VIEW3D_OT_paint_select.bl_idname, 'LEFTMOUSE', 'PRESS')
@@ -111,14 +110,6 @@ def register():
     kmi.properties['extend'] = 1
     kmi.properties['toggle'] = 1
     kmi.properties['deselect'] = 0
-    keymaps.append((km, kmi))
-
-    kmi = km.keymap_items.new(
-        VIEW3D_OT_paint_select.bl_idname, 'LEFTMOUSE', 'PRESS', ctrl=True,
-        shift=True)
-    kmi.properties['deselect'] = 1
-    kmi.properties['toggle'] = 0
-    kmi.properties['extend'] = 0
     keymaps.append((km, kmi))
 
 
