@@ -16,7 +16,6 @@ bl_info = {
 
 
 class VIEW3D_OT_paint_select(bpy.types.Operator):
-    """Move an object with the mouse, example"""
     bl_idname = "view3d.paint_select"
     bl_label = "Paint Select"
     bl_options = {'REGISTER', 'UNDO'}
