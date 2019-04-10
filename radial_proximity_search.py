@@ -8,6 +8,8 @@ from bgl import (GL_ALWAYS, GL_BLEND, glDepthFunc, glDisable, glEnable,
 from gpu.types import GPUShader
 from gpu_extras.batch import batch_for_shader
 
+# cache class methods on module level
+# performance gain is insignificant
 Vector = mathutils.Vector
 inv = mathutils.Matrix.inverted
 norm = Vector.normalized
@@ -25,6 +27,7 @@ def nan_vector(size, freeze=True):
     if not freeze:
         return nan_vec
 
+    # vectors must be frozen before used in a deque
     frozen = nan_vec.freeze()
     del nan_vec
     return frozen
@@ -96,7 +99,7 @@ vshader = """
         gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.999);
     }
 """
-
+# draw a round yellow shape to represent a vertex
 fshader = """
     void main()
     {
