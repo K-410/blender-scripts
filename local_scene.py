@@ -1,11 +1,11 @@
-# Local Scene is a (simple) substitute for missing Local Mode in Blender 2.80
+# Local Scene is a (simple) substitute for missing Local View in Blender 2.80
+# Since Local View now is fully supported, this no longer has any purpose.
 #
-# Current limitations:
+# Limitations:
 # -   Can't have multiple Local Scenes. Local Scene is applied in all viewports
 # -   Restore View setting doesn't use smooth view
 # -   Deleting an object moved to Local Scene does not remove it from the
 #     original scene
-# -   Local Scene "state" is saved along the file.
 
 import blf
 import bpy
