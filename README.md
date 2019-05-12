@@ -4,7 +4,9 @@ Collection of scripts and script snippets for Blender
 </br>
 </br>
 #### rotate_opengl_lights.py (2.79)
-Rotate OpenGL solid lights in the 3D viewport. 
+Rotate OpenGL solid lights in the 3D viewport.
+
+![](https://github.com/K-410/blender-scripts/blob/master/gifs/rotate_opengl_lights.gif)
 </br>
 </br>
 #### local_scene.py (2.80)
