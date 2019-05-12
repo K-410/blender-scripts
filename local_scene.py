@@ -1,27 +1,23 @@
 # Local Scene is a (simple) substitute for missing Local Mode in Blender 2.80
 #
-#
 # Current limitations:
-# -   Cannot have multiple Local Scenes. Local Scene gets applied in all viewports
-# -   Viewport label (eg. User Perspective) doesn't reflect being in "Local Scene" mode
-# -   Restore View setting doesn't cannot use smooth view (yet)
-# -   Deleting an object in Local Scene does not delete it from the original scene unless it was created in Local Scene
-# -   Creating new objects in Local Scene automatically links them to the original 
+# -   Can't have multiple Local Scenes. Local Scene is applied in all viewports
+# -   Restore View setting doesn't use smooth view
+# -   Deleting an object moved to Local Scene does not remove it from the
+#     original scene
 # -   Local Scene "state" is saved along the file.
-#   scene when Local Scene is removed
-#
-#TODO
-# Create a "Local Scene" collection for objects for organizational and visual feedback in Outliner
 
-import bpy, blf
-from bpy.props          import *
-from mathutils          import Matrix
-from bpy.app.handlers   import persistent
+import blf
+import bpy
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty,
+                       FloatVectorProperty, IntProperty, StringProperty)
+from mathutils import Matrix
 
 bl_info = {
     "name":         "Local Scene",
-    "description":  "Add a Local Scene mode that isolates selection to a new scene "
-                    "called 'Local Scene'. A substitute for missing Local Mode",
+    "description":  "Add a Local Scene mode that isolates selection to a new "
+                    "scene called 'Local Scene'. A substitute for missing "
+                    "Local Mode",
     "author":       "iceythe",
     "version":      (1, 0, 0),
     "blender":      (2, 80, 0),
@@ -29,62 +25,112 @@ bl_info = {
     "category":     "3D View",
 }
 
-C   = bpy.context
-D   = bpy.data
-local_coll  = [] # Store local scene collection
+dns = bpy.app.driver_namespace
 
-def delete_scene(scn):
-    local_scn   = bpy.data.scenes[scn]
-    objs        = local_scn.collection.objects
-    if objs:
-        local_coll.clear()
-        for obj in objs:
-            local_coll.append(obj)
-    bpy.data.scenes.remove(bpy.data.scenes[scn])
 
-def def_colls():
-    return [coll for coll in bpy.data.collections]
+def addon_prefs():
+    user_prefs = bpy.context.preferences
+    addon = user_prefs.addons[__name__]
+    return addon.preferences
 
-@persistent
-def local_scene_handler(dummy):                 # POST LOAD
-    print("post_load handler was triggered")
-    dns     = bpy.app.driver_namespace
+
+def get_non_local_scenes():
+    local = bpy.data.scenes.get(addon_prefs().local_scene_name)
+    return set(s for s in bpy.data.scenes if s != local)
+
+
+def get_objects(scene):
+    a, b = scene.collection.objects, scene.objects
+    return set((x for y in (a, b) for x in y))
+
+
+def store_scene(scene):
+    addon_prefs().original_scene = scene.name
+
+
+def restore_scene(context):
+    bpy.ops.view3d.local_scene_text(state=False)
+    if retrieve_scene() is not None:
+        context.window.scene = retrieve_scene()
+    else:
+        Scenes = get_non_local_scenes()
+        context.window.scene = Scenes[0]
+    # bpy.ops.view3d.local_scene_text(state=False)
+
+
+def retrieve_scene():
+    scene = bpy.data.scenes.get(addon_prefs().original_scene)
+    return scene
+
+
+def view_selected(context):
+    if context.mode == 'OBJECT':
+        bpy.ops.view3d.view_selected('INVOKE_DEFAULT', False)
+    else:
+        bpy.ops.object.editmode_toggle(False)
+        bpy.ops.view3d.view_selected('INVOKE_DEFAULT', False)
+        bpy.ops.object.editmode_toggle(False)
+
+
+def store_view(context):
+    prefs = addon_prefs()
+    r3d = context.region_data
+    context.scene['view_matrix'] = r3d.view_matrix
+    prefs.view_distance = r3d.view_distance
+    prefs.view_location = r3d.view_location
+
+
+def restore_view(context):
+    prefs = addon_prefs()
+    r3d = context.region_data
+    v_mat = 'view_matrix'
+    try:
+        r3d.view_matrix = Matrix(context.scene[v_mat])
+    except KeyError:
+        print("Local Scene Addon: Addon was reloaded while "
+              "Local Scene was in effect. Reverting to defaults.")
+    r3d.view_distance = prefs.view_distance
+    r3d.view_location = prefs.view_location
+
+
+@bpy.app.handlers.persistent
+def local_scene_handler(dummy):
     dns['vpt_size'] = 16
     if 'Local Scene' in bpy.context.scene.name:
         bpy.ops.view3d.local_scene_text(state=True)
-    print("Handle 'load_handler_isolate' is working")
 
-def get_handler(arg):                       # Return a list of handlers
-    assert arg == 'POST' or 'PRE'
+
+def get_handler(arg):
     handler_list = []
+
     if arg == 'POST':
         for h in bpy.app.handlers.load_post:
             if h.__name__ == 'local_scene_handler':
                 handler_list.append(h)
         return handler_list
+
     elif arg == 'PRE':
         for h in bpy.app.handlers.load_pre:
             if h.__name__ == 'local_scene_load_pre':
                 handler_list.append(h)
+
         return handler_list
     return []
 
 
-@persistent
-def local_scene_load_pre(dummy):                # PRE LOAD
-    print("pre_load handler was triggered")
+@bpy.app.handlers.persistent
+def local_scene_load_pre(scene):
     bpy.ops.view3d.local_scene_text(state=False)
-    # local_scene_remove_handlers()
 
 
-def add_handlers():                             # Get current list of Local Scene handlers
+def add_handlers():
     if not get_handler('POST'):
         bpy.app.handlers.load_post.append(local_scene_handler)
     if not get_handler('PRE'):
         bpy.app.handlers.load_pre.append(local_scene_load_pre)
 
 
-def local_scene_remove_handlers():         # Clear any handlers added by the addon
+def local_scene_remove_handlers():
     if get_handler('POST'):
         for h in get_handler('POST'):
             bpy.app.handlers.load_post.remove(h)
@@ -93,240 +139,299 @@ def local_scene_remove_handlers():         # Clear any handlers added by the add
             bpy.app.handlers.load_pre.remove(h)
 
 
+def draw_handler_remove(context):
+    vpt = addon_prefs().vpt
+    if vpt in dns:
+        try:
+            bpy.types.SpaceView3D.draw_handler_remove(dns[vpt], 'WINDOW')
+        except ValueError:
+            print("Local Scene Addon: No handler found")
+        del dns[vpt]
+    refresh_viewport(context)
+
+
+def refresh_viewport(context):
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
+    context.scene.update()
+
+
 class LocalScene(bpy.types.Operator):
     """Isolates selection to a new scene"""
-    bl_idname   = "view3d.local_scene_mode"
-    bl_label    = "Local Scene"
-    bl_options  = {'REGISTER'}
-    
-    # Booleans
-    # copy_scene:     BoolProperty(name='Copy scene settings', default=True)
-    # view_selected:  BoolProperty(name='View Selected', default=True)
-    # restore_view:   BoolProperty(name='Restore View', default=True)
-    view_selected   = True
-    copy_scene      = True
-    restore_view    = True
-
-    # Internal
-    default_scene:  StringProperty(name='Scene', default='Scene')
-    local_scene:    StringProperty(name='Local Scene Name', default='Local Scene')
-    view_matrix:    FloatVectorProperty(name='View Matrix', subtype='MATRIX', default=(0,0,0))
-    view_location:  FloatVectorProperty(name='View Location')
-    view_distance:  FloatProperty(name='View Distance', default=10)
-
-
-    def restore_scene(self, context):
-        D = bpy.data
-        bpy.ops.view3d.local_scene_text(state=False)
-        if not self.default_scene in D.scenes:
-            context.window.scene = D.scenes[0]
-            bpy.ops.view3d.local_scene_text(state=False)
-        else:
-            context.window.scene = D.scenes[self.default_scene]
-            if local_coll:
-                for obj in local_coll:
-                    if not obj.name in bpy.data.scenes[self.default_scene].objects:
-                        if not obj.name in bpy.data.scenes[self.default_scene].collection.objects:
-                            context.scene.collection.objects.link(obj)
-                local_coll.clear()
-        
-    def view_selected_fn(self, context):
-        if self.view_selected:
-            mode    = context.mode
-            O       = bpy.ops
-            O.object.editmode_toggle() if 'EDIT_MESH' in mode else None
-            O.view3d.view_selected('INVOKE_DEFAULT', False)
-            O.object.editmode_toggle() if 'EDIT_MESH' in mode else None
-
-    def store_view_fn(self, context):
-        r3d = context.region_data
-        context.scene['view_matrix']    = r3d.view_matrix # Store view matrix 
-        self.view_distance              = r3d.view_distance # Store view_distance -- camera <--> look-at point
-        self.view_location              = r3d.view_location # Store view_location -- (camera?,look-at?) location here
-
-    def restore_view_fn(self, context):
-        r3d                 = context.region_data
-        r3d.view_matrix     = Matrix(context.scene['view_matrix']) #return mat
-        r3d.view_distance   = self.view_distance # Restore view_distance
-        r3d.view_location   = self.view_location # Restore view_location
-    
-    def link_objs(self, context, objs, scn):
-        for obj in objs:
-            scn.collection.objects.link(obj)
+    bl_idname = "view3d.local_scene_mode"
+    bl_label = "Local Scene"
+    bl_options = {'REGISTER'}
 
     @classmethod
     def poll(cls, context):
-        return context.scene is not None
+        return (context.selected_objects or
+                bpy.data.scenes.get(addon_prefs().local_scene_name))
 
     def execute(self, context):
-        C   = bpy.context
-        D   = bpy.data
-        O   = bpy.ops
 
-        # Delete Local Scene code starts here
-        scn = self.local_scene
+        D = bpy.data
+        Colls = D.collections
+        Scenes = D.scenes
 
-        if scn in bpy.data.scenes:
-            delete_scene(scn)
-            self.restore_scene(context)
+        user_prefs = context.preferences
+        prefs = user_prefs.addons[__name__].preferences
+        zoom_selected = prefs.zoom_selected
+        local_coll_name = prefs.local_coll_name
 
-            if self.restore_view:
-                self.restore_view_fn(context) # Restore view
+        local_scene = bpy.data.scenes.get(addon_prefs().local_scene_name)
+        if context.scene is local_scene:
+            if len(bpy.data.scenes) == 1:
+                scene = D.scenes.new('Scene')
+                store_scene(scene)
 
+            scene = retrieve_scene()
+            for obj in (get_objects(local_scene) - get_objects(scene)):
+                scene.collection.objects.link(obj)
+            Scenes.remove(local_scene)
 
-        # Create Local Scene code starts here
+            local_coll = Colls.get(local_coll_name)
+            if local_coll:
+                if local_coll is not None:
+                    Colls.remove(local_coll)
+            restore_scene(context)
+            if prefs.restore_view:
+                restore_view(context)
+
         else:
+            store_scene(context.scene)
             bpy.ops.view3d.local_scene_text(state=True)
-            selection = C.selected_objects, C.object
-            if any(selection): # Check if anything is selected
-                if self.restore_view:
-                    self.store_view_fn(context) # Store View
-                self.default_scene = C.scene.name
-                
-                local_coll = []
-                for obj in C.selected_objects:
-                    local_coll.append(obj)
-                ao = C.active_object
-                if ao:
-                    if not ao in local_coll:
-                        local_coll.append(ao)
+            sel = context.selected_objects
 
-                if not C.selected_objects and C.object:
-                    C.object.select_set(True)
-                    self.view_selected_fn(context)
-                    C.object.select_set(False)
-                else:
-                    self.view_selected_fn(context)
+            if any(sel):
+                if prefs.restore_view:
+                    store_view(context)
 
-                if self.copy_scene: # Check if 'Copy Settings' is True
+                objs_to_link = set()
+                for obj in context.selected_objects:
+                    objs_to_link.add(obj)
+                ao = context.active_object
+                objs_to_link.add(ao) if ao else None
+
+                if zoom_selected:
+                    if not context.selected_objects and context.object:
+                        context.object.select_set(True)
+                        view_selected(context)
+                        context.object.select_set(False)
+                    else:
+                        view_selected(context)
+
+                if prefs.copy_scene:
                     bpy.ops.scene.new(type='EMPTY')
-                    local_scn, local_scn.name = C.scene, 'Local Scene'
+                    local_scene = context.scene
+                    local_scene.name = 'Local Scene'
                 else:
-                    local_scn       = D.scenes.new('Local Scene')
-                    C.window.scene  = local_scn
-                
-                self.link_objs(context, local_coll, local_scn)
+                    local_scene = bpy.data.scenes.new('Local Scene')
+                    context.window.scene = local_scene
 
-                for obj in C.view_layer.objects:
+                if local_coll_name not in Colls:
+                    local_coll = Colls.new(local_coll_name)
+                else:
+                    local_coll = Colls.get(local_coll_name)
+
+                local_scene.collection.children.link(local_coll)
+                [local_coll.objects.link(o) for o in objs_to_link]
+
+                for obj in context.view_layer.objects:
                     obj.select_set(True)
-                C.view_layer.objects.active = ao
+                context.view_layer.objects.active = ao
         return {'FINISHED'}
-
 
 
 class LocalSceneViewportText(bpy.types.Operator):
-    bl_idname   = "view3d.local_scene_text"
-    bl_label    = "Local Scene Viewport Text"
-    bl_options  = {'REGISTER'}
-    
-    state:      bpy.props.BoolProperty(name='State', default=False)
-    font_size:  bpy.props.IntProperty(name='Font Size', description='Viewport fpmt size', default=16)
-    vpt         = "local_scene_handler"
-    handle      = None
-    
+    """Viewport Text Draw"""
+    bl_idname = "view3d.local_scene_text"
+    bl_label = "Local Scene Viewport Text"
+    bl_options = {'REGISTER'}
+
+    state: bpy.props.BoolProperty(
+        description="Used to determine whether the text should show by passing"
+        "the 'state' kwarg to the operator", name='State', default=False)
+
+    handle = None
+
     def execute(self, context):
-        sv3d        = bpy.types.SpaceView3D
-        state       = self.state
-        dns         = bpy.app.driver_namespace
-        vpt         = self.vpt
-        vpt_size	= self.font_size
+        user_prefs = context.preferences
+        prefs = user_prefs.addons[__name__].preferences
+        font_size = prefs.vpt_size
+        sv3d = bpy.types.SpaceView3D
+        state = self.state
+        vpt = prefs.vpt
 
         if state:
-            self.remove_handler(self)                   # Clear handlers as precaution
-            dns['vpt_size'] = self.font_size	        # Set font size before adding handler
-
+            draw_handler_remove(context)
+            dns['vpt_size'] = font_size
             self.handle = sv3d.draw_handler_add(
-                self.draw_callback, (None, None), 
+                self.draw_callback, (None, None),
                 'WINDOW', 'POST_PIXEL')
 
-            dns[self.vpt] = self.handle	                # Store handle RNA in driver namespace
-            self.refresh(context)                       # Update viewports
+            dns[vpt] = self.handle
+            refresh_viewport(context)
         else:
-            self.remove_handler(self)
+            draw_handler_remove(context)
         return {'FINISHED'}
-    
-    def remove_handler(self, context):
-        vpt     = self.vpt
-        dns     = bpy.app.driver_namespace
-        if vpt in dns:
-            try:
-                bpy.types.SpaceView3D.draw_handler_remove(dns[vpt], 'WINDOW')
-            except:
-                print("Local Scene Addon: No handler found")
-            del dns[vpt]
-        self.refresh(context)
-    
-    def refresh(self, context):
-        for area in bpy.context.screen.areas:
-            if area.type == 'VIEW_3D':
-                area.tag_redraw()
-        bpy.context.scene.update()
 
     @staticmethod
     def draw_callback(self, context):
-        """
-        Draw Local Scene state in viewport
-        """
-        dns         = bpy.app.driver_namespace
-        area        = bpy.context.area
-        font_size   = 16 #dns['vpt_size']
-        font_id     = 0
-        string      = "Local Scene"
-        bottom      = False
-        center      = True
-        pos_y       = 20 if bottom else area.height - 50
+        user_prefs = bpy.context.preferences
+        prefs = user_prefs.addons[__name__].preferences
+        use_vpt = prefs.use_vpt
 
-        if center:
-            c = area.width / 2
-            f = blf.dimensions(font_id, string)[0] / 2
-            pos_x = int(c - f)
+        if use_vpt:
+            area = bpy.context.area
+            regions = area.regions
+            font_size = prefs.vpt_size
+            header_h = regions[1].height
+            h_enabled = header_h > 5
+            h_at_top = regions[1].y != regions[4].y
 
-        blf.position(font_id, pos_x, pos_y, 0)
-        blf.size(font_id, font_size, 72)
-        blf.draw(font_id, string)
-        blf.disable(font_id, 2)
+            vpt_text = prefs.vpt_text
+            align_v = prefs.vpt_align_v
+            font_id = 0
+            v_minus = font_size * 0.65
+            h_minus = (len(vpt_text) / 2) * (font_size / 2)
+
+            pos_y = 0
+            if h_enabled:
+                if h_at_top:
+                    if align_v == 'TOP':
+                        pos_y = area.height - (35 + v_minus)
+                else:
+                    if align_v == 'TOP':
+                        pos_y = area.height - (header_h - 10 + v_minus)
+                    else:
+                        pos_y = 40
+            else:
+                if align_v == 'TOP':
+                    pos_y = area.height - (header_h + 15 + v_minus)
+            center = True
+            if center:
+                c = area.width / 2
+
+                pos_x = int(c - h_minus)
+
+            blf.position(font_id, pos_x, pos_y, 0)
+            blf.size(font_id, font_size, 72)
+            blf.draw(font_id, vpt_text)
+            blf.disable(font_id, 2)
 
 
-class LocalSceneAddonPreferences(bpy.types.PropertyGroup):
+class LocalScenePreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
 
-    vpt_text: StringProperty(
-        name='Viewport Text', default='Local Scene',
-        description='Text to show when Local Scene is active')
+    vpt = "local_scene_handler"
+    local_scene_name = 'Local Scene'
+    local_coll_name = 'Local Scene Collection'
+    view_distance: FloatProperty()
+    view_location: FloatVectorProperty()
 
-    vpt_size: IntProperty(
-        name='Font Size', default=16,
-        description='Font size for viewport text')
+    vpt_align_h_items = [("CENTER",  "Center",   "", 1),
+                         ("LEFT",    "Left",     "", 2),
+                         ("RIGHT",   "Right",    "", 3)]
 
-    # vpt_location: CollectionProperty(
+    vpt_align_v_items = [
+        ("TOP",     "Top",      "", 1), ("BOTTOM",  "Bottom",   "", 2)]
 
-    # )
-
-    copy_scene: BoolProperty(
-        name='Copy Scene Settings', default=True,
-        description='Use same scene settings for Local Scene as the original')
-
-    view_selected: BoolProperty(
-        name='Use View Selected', default=True,
-        description='Use View Selected when entering Local Scene')
+    state: bpy.props.BoolProperty(
+        description="Used to determine whether the text should show by passing"
+        " the 'state' kwarg to the operator", name='State', default=False)
 
     restore_view: BoolProperty(
-        name='Restore Views', default=True,
-        description='Restore views when exiting Local Scene')
+        name='Restore Views', default=True, description="When enabled, exiting"
+        " Local Scene will restore viewport")
+
+    zoom_selected: BoolProperty(
+        name='Frame Selected', default=True, description="Frame selected "
+        "objects when entering Local Scene")
+
+    copy_scene: BoolProperty(
+        name='Copy Scene Settings', default=True, description="Copy settings "
+        "from original scene to Local Scene. If unchecked, Local Scene is "
+        "created using default settings")
+
+    use_vpt: BoolProperty(
+        name='Enable Viewport Text', default=True, description="Enables "
+        "viewport text to indicate when Local Scene is active")
+
+    vpt_size: IntProperty(
+        name='Font Size', default=11, soft_max=30, soft_min=8, description=""
+        "Font size for Local Scene viewport text")
+
+    vpt_text: StringProperty(
+        name='Text', default='Local Scene', description="Viewport text to show"
+        "when Local Scene is active")
+
+    vpt_align_h: EnumProperty(
+        name='Horizontal Alignment', default='CENTER', description="Horizontal"
+        "alignment of viewport text", items=vpt_align_h_items)
+
+    vpt_align_v: EnumProperty(
+        name='Vertical Alignment', default='TOP', description="Vertical "
+        "alignment of viewport text", items=vpt_align_v_items)
+
+    original_scene: StringProperty(name="Scene", default='Scene')
+
+    def draw(self, context):
+        use_vpt = self.use_vpt
+
+        layout = self.layout
+
+        row = layout.row()
+        split = row.split(factor=0.5)
+        split.prop(self, "copy_scene")
+        split.prop(self, "restore_view")
+
+        row = layout.row()
+        split = row.split(factor=0.5)
+        split.prop(self, "zoom_selected")
+        split.prop(self, "use_vpt")
+        layout.separator()
+
+        if use_vpt:
+            row = layout.row()
+            split = row.split(factor=0.5)
+            split.label(text="Viewport Text")
+            split.label(text="Font Size")
+
+            row = layout.row()
+            split = row.split(factor=0.5)
+            split.prop(self, "vpt_text", text="")
+            split.prop(self, "vpt_size", text="")
+
+            row = layout.row()
+            split = row.split(factor=0.5)
+            split.label(text="Horizontal Alignment")
+            split.label(text="Vertical Alignment")
+
+            row = layout.row()
+            split = row.split(factor=0.5)
+            split.prop(self, "vpt_align_h", text="")
+            split.prop(self, "vpt_align_v", text="")
+
+            layout.separator()
+            layout.separator()
+
 
 addon_keymaps = []
-classes = [LocalScene, LocalSceneViewportText]
+
+classes = (LocalScene, LocalSceneViewportText, LocalScenePreferences)
+
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    wm      = bpy.context.window_manager
-    km      = wm.keyconfigs.addon.keymaps.new(name='3D View', space_type='VIEW_3D')
-    kmi     = km.keymap_items.new(LocalScene.bl_idname, 'Q', 'PRESS', alt=True)
+    wm = bpy.context.window_manager
+    km = wm.keyconfigs.addon.keymaps.new(name='3D View', space_type='VIEW_3D')
+    kmi = km.keymap_items.new(LocalScene.bl_idname, 'Q', 'PRESS', alt=True)
     addon_keymaps.append((km, kmi))
-    print("Running add_handlers()")
     add_handlers()
-    print("Local Scene Addon: Successfully registered")
+
 
 def unregister():
     for cls in classes:
@@ -336,7 +441,11 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
     local_scene_remove_handlers()
+    for scene in bpy.data.scenes:
+        if 'view_matrix' in scene:
+            del scene['view_matrix']
     print("Local Scene Addon: Successfully unregistered")
+
 
 if __name__ == "__main__":
     register()
