@@ -1,12 +1,10 @@
-from code import InteractiveInterpreter
+import code
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from sys import modules
-from types import ModuleType
 from time import perf_counter
+from types import ModuleType
 
 import bpy
-from bpy.types import Operator
 
 bl_info = {
     "name": "*Run In Console",
@@ -32,8 +30,7 @@ def get_console_spaces(context):
         if area.type == 'CONSOLE':
             for region in area.regions:
                 if region.type == 'WINDOW':
-                    space = area.spaces.active
-                    spaces.append((area, space, region))
+                    spaces.append((area, area.spaces.active, region))
                     break
 
     if not spaces:
@@ -68,11 +65,19 @@ def gen_C_dict(context, area, space, region):
 
 def scrollback_append(result, type='INFO'):
     """Append text to the console."""
-    scrollback = bpy.ops.console.scrollback_append
+
     if result:
-        for line in result.split("\n"):
-            text = line.replace("\t", "    ")
-            scrollback(context_dict, text=text, type=type)
+        scrollback = bpy.ops.console.scrollback_append
+        for l in result.split("\n"):
+            text = l.replace("\t", "    ")
+            try:
+                scrollback(context_dict, text=text, type=type)
+
+            except RuntimeError:
+                # handle exceptions when blender is redrawing
+                args, kwargs = context_dict, {'text': text, 'type': type}
+                bpy.app.timers.register(
+                    lambda: scrollback(args, **kwargs), first_interval=0.1)
 
 
 def runsource(source):
@@ -82,11 +87,13 @@ def runsource(source):
     errors.
     """
 
-    main_org = modules["__main__"]
+    modules = code.sys.modules
+    main_org = modules.get("__main__")
     main = ModuleType("__main__")
     namespace = main.__dict__
-    namespace["__builtins__"] = modules["builtins"]
-    console = InteractiveInterpreter(locals=namespace)
+    # namespace["__builtins__"] = modules["builtins"]
+    namespace.update(__builtins__=modules.get("builtins"))
+    console = code.InteractiveInterpreter(locals=namespace)
     stderr = StringIO()
 
     with redirect_stderr(stderr):
@@ -94,8 +101,7 @@ def runsource(source):
             modules["__main__"] = main
             console.runsource(source)
         except Exception:
-            import traceback
-            stderr.write(traceback.format_exc())
+            stderr.write(code.traceback.format_exc())
         finally:
             modules["__main__"] = main_org
 
@@ -116,8 +122,7 @@ def printc(*value: object, sep=' ', end=''):
     scrollback_append(st, type='OUTPUT')
 
     if prefs.real_time_hack:
-        area = context_dict.get('area')
-        area.tag_redraw()
+        context_dict.get('area').tag_redraw()
         with redirect_stdout(_dummy_out):
             redraw_timer(type='DRAW_SWAP', iterations=0, time_limit=0)
 
@@ -170,7 +175,7 @@ class CONSOLE_MT_redirect(bpy.types.Menu):
                 row.operator("console.redirect")
 
 
-class TEXT_OT_run_in_console(Operator):
+class TEXT_OT_run_in_console(bpy.types.Operator):
     bl_idname = "text.run_in_console"
     bl_label = "Run In Console"
 
@@ -189,7 +194,7 @@ class TEXT_OT_run_in_console(Operator):
         bpy.types.CONSOLE_HT_header.append(CONSOLE_MT_redirect.draw)
 
         preferences = bpy.context.preferences.addons[__name__].preferences
-        setattr(modules[__name__], 'prefs', preferences)
+        setattr(code.sys.modules[__name__], 'prefs', preferences)
 
     @staticmethod
     def _remove():
@@ -214,8 +219,9 @@ class TEXT_OT_run_in_console(Operator):
                 self.any_console(self, context))
 
     def draw(self, context):
-        row = self.layout.row(align=True)
-        row.operator("text.run_in_console")
+        if getattr(context.space_data, 'text', None) is not None:
+            row = self.layout.row(align=True)
+            row.operator("text.run_in_console")
 
     def execute(self, context):
         t_start = perf_counter()
@@ -224,7 +230,7 @@ class TEXT_OT_run_in_console(Operator):
         if spaces:
             gen_C_dict(context, *spaces)
             text = context.space_data.text
-            file = repr(f"{text.name}")
+            file = repr(text.name)
             source = text.as_string()
 
             if prefs.replace_print:
@@ -252,7 +258,7 @@ class TEXT_OT_run_in_console(Operator):
         return {'FINISHED'}
 
 
-class CONSOLE_OT_redirect(Operator):
+class CONSOLE_OT_redirect(bpy.types.Operator):
     bl_description = 'Redirect script output to this console'
     bl_idname = 'console.redirect'
     bl_label = 'Redirect'
@@ -264,7 +270,7 @@ class CONSOLE_OT_redirect(Operator):
     def execute(self, context):
         consoles = list_consoles(context)
         index = consoles.index(context.area)
-        context.screen.update(console_redirect=index)
+        context.screen['console_redirect'] = index
         for console in consoles:
             console.tag_redraw()
         return {'FINISHED'}
@@ -301,23 +307,20 @@ def get_console_index(context):
 
 
 def classes():
-    import inspect
-    for _, item in inspect.getmembers(inspect.sys.modules[__name__]):
-        if inspect.isclass(item) and item.__module__ == __name__:
-            yield item
+    from inspect import isclass
+    return [i for i in globals().values() if isclass(i) and
+            i.__module__ == __name__]
 
 
 def register():
-    from bpy.utils import register_class
     for cls in classes():
-        register_class(cls)
+        bpy.utils.register_class(cls)
         if hasattr(cls, '_setup'):
             cls._setup()
 
 
 def unregister():
-    from bpy.utils import unregister_class
     for cls in reversed(classes()):
         if hasattr(cls, '_remove'):
             cls._remove()
-        unregister_class(cls)
+        bpy.utils.unregister_class(cls)
