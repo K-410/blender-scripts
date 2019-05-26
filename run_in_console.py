@@ -1,3 +1,5 @@
+# TODO add "keep alive" feature that holds all binds and objects in console
+
 import code
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -77,7 +79,8 @@ def scrollback_append(result, type='INFO'):
                 # handle exceptions when blender is redrawing
                 args, kwargs = context_dict, {'text': text, 'type': type}
                 bpy.app.timers.register(
-                    lambda: scrollback(args, **kwargs), first_interval=0.1)
+                    lambda: None if scrollback(args, **kwargs) else None,
+                    first_interval=0.1)
 
 
 def runsource(source):
@@ -123,8 +126,18 @@ def printc(*value: object, sep=' ', end=''):
 
     if prefs.real_time_hack:
         context_dict.get('area').tag_redraw()
-        with redirect_stdout(_dummy_out):
+        bpy.app.timers.register(lambda: redraw(), first_interval=0.01)
+        # redraw()
+
+
+def redraw():
+    with redirect_stdout(_dummy_out):
+        try:
             redraw_timer(type='DRAW_SWAP', iterations=0, time_limit=0)
+        except RuntimeError:
+            print("runtime error")
+            pass
+            # bpy.app.timers.register(lambda: redraw(), first_interval=0.1)
 
 
 class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
@@ -139,12 +152,12 @@ class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
         "hijack print function from operators registered from the text editor")
 
     real_time_hack: bpy.props.BoolProperty(
-        default=True, name="Real Time Workaround", description="Force Blender "
+        default=False, name="Real Time Workaround", description="Force Blender "
         "to print messages in the middle of script execution. Note this is "
         "considered a hack")
 
     perf_counter: bpy.props.BoolProperty(
-        default=False, name="Enable Perf Counter", description="Enable to "
+        default=True, name="Enable Perf Counter", description="Enable to "
         "display script execution speed at the end")
 
     def draw(self, context):
