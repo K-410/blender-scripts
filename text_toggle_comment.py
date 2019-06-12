@@ -95,7 +95,7 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
         line_begin, line_end = sorted((index(line_a), index(line_b)))
         lines = text.lines[line_begin:line_end + 1]
 
-        print(self.indented_comments(context, lines))
+        # print(self.indented_comments(context, lines))
         # select line if only one, otherwise commenting will fail
         if len(lines) == 1:
             bpy_ops_text.select_line()
