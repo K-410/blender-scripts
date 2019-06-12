@@ -21,6 +21,26 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
         return (context.area.type == 'TEXT_EDITOR' and
                 context.space_data.text)
 
+    def get_indent(self, body, tab):
+        indent = 0
+        while body.find(" " * tab, indent * tab) != -1:
+            indent += 1
+        return indent
+
+    # detect indented comments since blender doesn't
+    def indented_comments(self, context, lines):
+        tab = context.space_data.tab_width
+        processed = []
+
+        for line in lines:
+            body = line.body
+            if body.startswith(" "):
+                if body.lstrip().startswith("#"):
+                    processed.append(self.get_indent(body, tab))
+                    continue
+            processed.append(False)
+        return any(processed), all(processed)
+
     def set_selection(self, text, index, selection, comment):
         line_a, col_a, line_b, col_b = selection
         bpy_ops_text = bpy.ops.text
@@ -75,6 +95,7 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
         line_begin, line_end = sorted((index(line_a), index(line_b)))
         lines = text.lines[line_begin:line_end + 1]
 
+        print(self.indented_comments(context, lines))
         # select line if only one, otherwise commenting will fail
         if len(lines) == 1:
             bpy_ops_text.select_line()
