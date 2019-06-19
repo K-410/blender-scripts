@@ -11,6 +11,48 @@ bl_info = {
 }
 
 
+def set_select(self, lin_a, col_a, lin_b, col_b):
+    txt, index = self.txt, self.index
+    prev, next = 'PREVIOUS_CHARACTER', 'NEXT_CHARACTER'
+    up, dn = 'PREVIOUS_LINE', 'NEXT_LINE'
+    bpy_ops_text = bpy.ops.text
+
+    while txt.current_line_index != lin_a:
+        cur = txt.current_line_index
+        bpy_ops_text.move(False, type=up if cur > lin_a else dn)
+
+    last = next_last = None
+    while txt.current_character != col_a:
+        cur = txt.current_character
+        # workaround for tab being treated as single character
+        if cur == next_last:
+            break
+        bpy_ops_text.move(False, type=prev if cur > col_a else next)
+        next_last, last = last, cur
+
+    while index(txt.select_end_line) != lin_b:
+        end = index(txt.select_end_line)
+        bpy_ops_text.move_select(False, type=up if end > lin_b else dn)
+
+    last = next_last = None
+    while txt.select_end_character != col_b:
+        end = txt.select_end_character
+        if end == next_last:
+            break
+        bpy_ops_text.move_select(False, type=prev if end > col_b else next)
+        next_last, last = last, end
+
+
+def get_indent(line, tab_width):
+    tab, idx = " " * tab_width, 0
+    while line.body.lstrip("#").find(tab, idx * tab_width) != -1:
+        idx += 1
+    return idx
+
+def has_indented_comments(line):
+    return line.body.startswith(" ")
+
+
 class TEXT_OT_toggle_comment(bpy.types.Operator):
     bl_idname = "text.toggle_comment"
     bl_label = "Toggle Comment"
@@ -18,99 +60,69 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
 
     @classmethod
     def poll(self, context):
-        return (context.area.type == 'TEXT_EDITOR' and
-                context.space_data.text)
-
-    def get_indent(self, body, tab):
-        indent = 0
-        while body.find(" " * tab, indent * tab) != -1:
-            indent += 1
-        return indent
-
-    # detect indented comments since blender doesn't
-    def indented_comments(self, context, lines):
-        tab = context.space_data.tab_width
-        processed = []
-
-        for line in lines:
-            body = line.body
-            if body.startswith(" "):
-                if body.lstrip().startswith("#"):
-                    processed.append(self.get_indent(body, tab))
-                    continue
-            processed.append(False)
-        return any(processed), all(processed)
-
-    def set_selection(self, text, index, selection, comment):
-        line_a, col_a, line_b, col_b = selection
-        bpy_ops_text = bpy.ops.text
-
-        # keep relative selection, compensate for "#"
-        col_a += 1 if col_a and comment else -1 if col_a else 0
-        col_b += 1 if col_b and comment else -1 if col_b else 0
-
-        while text.current_line_index != line_a:
-            bpy_ops_text.move(
-                type='PREVIOUS_LINE'
-                if text.current_line_index > line_a else 'NEXT_LINE')
-
-        last = next_last = None
-        while text.current_character != col_a:
-            # workaround for tab being treated as single character
-            if text.current_character == next_last:
-                break
-            bpy_ops_text.move(
-                type='PREVIOUS_CHARACTER'
-                if text.current_character > col_a else 'NEXT_CHARACTER')
-            next_last, last = last, text.current_character
-
-        while index(text.select_end_line) != line_b:
-            bpy_ops_text.move_select(
-                type='PREVIOUS_LINE'
-                if index(text.select_end_line) > line_b else 'NEXT_LINE')
-
-        last = next_last = None
-        while text.select_end_character != col_b:
-            if text.select_end_character == next_last:
-                break
-            bpy_ops_text.move_select(
-                type='PREVIOUS_CHARACTER'
-                if text.select_end_character > col_b else 'NEXT_CHARACTER')
-            next_last, last = last, text.select_end_character
+        return (context.area.type == 'TEXT_EDITOR' and context.space_data.text)
 
     def execute(self, context):
-        text = context.space_data.text
+
+        # push two undos because blender sucks
+        bpy.ops.ed.undo_push(message=self.bl_idname)
+
+        st = context.space_data
+        # tab_width = st.tab_width
+        txt = st.text
+        all_lines = txt.lines[:]
+        inline = False
+        index = all_lines.index
         bpy_ops_text = bpy.ops.text
-        index = text.lines[:].index
+        # print(txt.current_character)
 
         # selection range
-        sel_range = (
-            text.current_line_index,
-            text.current_character,
-            index(text.select_end_line),
-            text.select_end_character)
-
+        lin_a = txt.current_line_index
+        lin_b = index(txt.select_end_line)
+        col_a = txt.current_character
+        col_b = txt.select_end_character
         # selected TextLine objects
-        line_a, line_b = text.current_line, text.select_end_line
-        line_begin, line_end = sorted((index(line_a), index(line_b)))
-        lines = text.lines[line_begin:line_end + 1]
+        start, end = sorted((lin_a, lin_b))
+        sel_lines = all_lines[start:end + 1]
+        self.txt, self.index = txt, index
 
-        # print(self.indented_comments(context, lines))
         # select line if only one, otherwise commenting will fail
-        if len(lines) == 1:
-            bpy_ops_text.select_line()
+        if len(sel_lines) == 1:
+            # inline = True
+            bpy_ops_text.select_line(False)
+        print("preee", txt.current_character)
 
-        # favor commenting if not all non-blank lines all are commented
-        non_empty = (l for l in lines if l.body.strip())
-        if all(l.body.lstrip().startswith("#") for l in non_empty):
+        # favor commenting if mixed lines
+        non_empty = (l for l in sel_lines if l.body.strip())
+        if all(l.body.startswith("#") for l in non_empty):
+
+            # check indented comments since blender skips those
+            # if all(has_indented_comments(l) for l in sel_lines):
+            #     for l in sel_lines:
+            #         indent = (" " * tab_width) * get_indent(l, tab_width)
+            #         if indent:
+            #             bod = l.body.lstrip().replace("#", "", 1)#.lstrip()
+            #             l.body = indent + bod.lstrip()
+
             bpy_ops_text.uncomment()
             comment = False
         else:
             bpy_ops_text.comment()
             comment = True
 
+        # nudge selection indices due to comment
+        col_a += 1 if col_a and comment else -1 if col_a else 0
+        col_b += 1 if col_b and comment else -1 if col_b else 0
         # ensure caret doesn't jump
-        self.set_selection(text, index, sel_range, comment)
+        print("post", txt.current_character)
+        set_select(self, lin_a, col_a, lin_b, col_b)
+
+        # ensure caret index is not higher than body length
+        # assert txt.select_end_character <= len(txt.select_end_line.body)
+        # if inline:
+        #     while txt.select_end_character > len(txt.select_end_line.body):
+        #         print("moving")
+        #         bpy.ops.text.move(type='PREVIOUS_CHARACTER')
         return {'FINISHED'}
 
     @classmethod
