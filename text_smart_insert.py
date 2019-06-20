@@ -139,7 +139,7 @@ class TEXT_OT_smart_insert_internal(bpy.types.Operator):
     store: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
     delete: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
-    # XXX use event.ascii or event.unicode to get typed character
+    # TODO use event.unicode to get typed character
 
     def invoke(self, context, event):
         print("ran")
@@ -249,13 +249,6 @@ class TEXT_OT_smart_insert_internal(bpy.types.Operator):
         kmi = km.keymap_items.new(idname, 'TEXTINPUT', 'ANY')
         cls._keymaps.append((km, kmi, kmidef))
 
-        # km = kc.addon.keymaps.get('Text')
-        # if not km:
-        #     km = kc.addon.keymaps.new('Text', space_type="TEXT_EDITOR")
-        # kmi = km.keymap_items.new(idname, 'BACK_SPACE', 'PRESS')
-        # kmi.properties['delete'] = 1
-        # cls._keymaps.append((km, kmi, None))
-
     @classmethod
     def _remove(cls):
         for km, kmi, kmidef in cls._keymaps:
@@ -281,6 +274,7 @@ class TEXT_OT_smart_insert(bpy.types.Macro):
         cls.define("ED_OT_undo_push").properties.message = cls.bl_label
 
         # actual text input operator
+        # TODO replace with event.unicode
         cls.define("TEXT_OT_insert")
 
         # where the magic happens. surround, swallow, etc.
