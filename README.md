@@ -1,5 +1,4 @@
-# blender-scripts
-Collection of scripts and script snippets for Blender
+Collection of scripts and snippets for Blender
 
 #### rotate_opengl_lights.py (2.79)
 ![](https://github.com/K-410/blender-scripts/blob/master/gifs/rotate_opengl_lights.gif)
