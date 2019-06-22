@@ -2,7 +2,7 @@ import bpy
 
 bl_info = {
     "name": "File Browser Defaults",
-    "description": "Save file browser settings globally instead of per file",
+    "description": "Set view settings in the file browser once, ever.",
     "author": "kaio",
     "version": (1, 0, 0),
     "blender": (2, 80, 0),
@@ -11,7 +11,6 @@ bl_info = {
 
 
 class FileBrowserDefaults(bpy.types.AddonPreferences):
-    """Save those damn file browser settings"""
     bl_idname = __name__
     EnumProperty = bpy.props.EnumProperty
 
