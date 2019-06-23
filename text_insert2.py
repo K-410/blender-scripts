@@ -16,15 +16,13 @@ BR_U = {"\"", "\'"}
 
 
 def indexof(txt, line):
-    return txt.lines[:].index(line)
-
-
-def is_left_brac(in_chr):
-    return BR_L.get(in_chr, False)
+    for idx, lin in enumerate(txt.lines):
+        if line == lin:
+            return idx
 
 
 def is_right_brac(in_chr):
-    return BR_R.get(in_chr, False)
+    return in_chr in BR_R
 
 
 def is_uniform_brac(in_chr):
@@ -42,12 +40,12 @@ def is_match(chr_a, chr_b):
     return False
 
 
-def is_char_ahead(txt):
-    return len(txt.select_end_line.body) > txt.select_end_character
-
-
-def get_char_ahead(txt):
-    return txt.select_end_line.body[txt.select_end_character]
+def get_next_char(txt):
+    bod = txt.select_end_line.body
+    end = txt.select_end_character
+    if len(bod) > txt.select_end_character:
+        return bod[end]
+    return ""
 
 
 def is_no_selection(txt):
@@ -143,26 +141,11 @@ def surround(self, txt, left, right):
     return {'FINISHED'}
 
 
-def swallow(txt, pair):
-    left, right = pair
-    lin_a = txt.current_line_index
-    lin_b = indexof(txt, txt.select_end_line)
-    col_a = txt.current_character
-    col_b = txt.select_end_character
-
-    # swallowing brackets only works with no selection
-    if col_a == col_b and lin_a == lin_b:
-        if col_a == txt.current_line.body.find(right, col_a):
-            if txt.current_line.body[col_a] == right:
-                return bpy.ops.text.move(type="NEXT_CHARACTER")
-    bpy.ops.text.insert(text=right)
-
-
 def delete_backspace(txt):
     bod = txt.select_end_line.body
     caret = txt.select_end_character
 
-    if is_char_ahead(txt):
+    if len(bod) > caret:
 
         if is_no_selection(txt):
             # delete prev/next brackets if they match
@@ -207,45 +190,48 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
         txt_sel, inline, reverse,\
             lin_a, lin_b, col_a, col_b = __class__._selection
         bod = txt.select_end_line.body
-        caret = txt.select_end_character
+        # caret = txt.select_end_character
+
+        chr_next = get_next_char(txt)
 
         try:
             in_chr = event.unicode  # get the typed character
-            r_brac = is_left_brac(in_chr)
+            r_brac = BR_L.get(in_chr)
             if r_brac:
-                if is_char_ahead(txt):
-                    chr_r = get_char_ahead(txt)
+                if chr_next:
                     # don't surround unless next char is whitespace or none
                     # or if next character is not the matching bracket
-                    if chr_r != " " and chr_r != BR_L.get(in_chr):
+                    if chr_next != " " and chr_next == BR_R[BR_L[in_chr]]:
                         if lin_a == lin_b and col_a == col_b:
                             return {'FINISHED'}
-
                 return surround(self, txt, in_chr, r_brac)
 
             elif is_right_brac(in_chr):  # typed char is right bracket
-                if is_char_ahead(txt) and bod[caret] in BR_R:
-                    return swallow_brac()  # swallow the typed char
+                r_brac = BR_L.get(BR_R[in_chr])
+                if in_chr in BR_R and BR_R[in_chr] in BR_L:
+                    # swallow only if the bracket types are identical
+                    if chr_next == r_brac:
+                        return swallow_brac()  # swallow the typed char
 
             elif is_uniform_brac(in_chr):  # handle (ticks, quotes) differently
-                if is_char_ahead(txt):
+                if chr_next:
 
                     # check if it matches with typed and no selection
-                    if bod[caret] == in_chr and not txt_sel:
+                    if chr_next == in_chr and not txt_sel:
                         return swallow_brac()
 
                 # don't count escaped chars
                 uni_count = bod.count(in_chr) - bod.count("\\" + in_chr)
                 if float.is_integer(uni_count * 0.5):  # surround if even
-                    if is_char_ahead(txt):
-                        if bod[caret] != " ":
+                    if chr_next:
+                        if chr_next != " ":
                             pass
                         else:
-                            if bod[caret] == " ":
+                            if chr_next == " ":
                                 return surround(self, txt, in_chr, in_chr)
                 else:
-                    if is_char_ahead(txt) and bod[caret] != " ":
-                        if txt_sel or bod[caret] in BR_R:
+                    if chr_next and chr_next != " ":
+                        if txt_sel or chr_next in BR_R:
                             return surround(self, txt, in_chr, in_chr)
                     else:
                         return surround(self, txt, in_chr, in_chr)
