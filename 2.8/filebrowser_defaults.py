@@ -1,3 +1,12 @@
+# file browser view settings like sort method,
+# display sizes and types are never saved
+
+# this makes it so view settings are stored
+# in the addon and automatically retrieved
+# whenever the file browser is opened
+
+# in other words - set the view settings once, and then never again
+
 import bpy
 
 bl_info = {
