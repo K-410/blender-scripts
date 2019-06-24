@@ -35,3 +35,12 @@
 <br>
 
 ![](https://github.com/K-410/blender-scripts/blob/master/gifs/object_move_origin.gif)
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+![](https://github.com/K-410/blender-scripts/blob/master/gifs/paint_select.gif)
