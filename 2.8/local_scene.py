@@ -154,7 +154,7 @@ def refresh_viewport(context):
     for area in context.screen.areas:
         if area.type == 'VIEW_3D':
             area.tag_redraw()
-    context.scene.update()
+    context.view_layer.update()
 
 
 class LocalScene(bpy.types.Operator):
