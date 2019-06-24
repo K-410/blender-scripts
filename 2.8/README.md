@@ -26,3 +26,12 @@
 <br>
 
 ![](https://github.com/K-410/blender-scripts/blob/master/gifs/local_scene.gif)
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+![](https://github.com/K-410/blender-scripts/blob/master/gifs/object_move_origin.gif)
