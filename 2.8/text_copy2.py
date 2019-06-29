@@ -26,7 +26,7 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
     action: bpy.props.EnumProperty(items=_actions, options={'HIDDEN'})
 
     @classmethod
-    def poll(self, context):
+    def poll(cls, context):
         return context.area.type == 'TEXT_EDITOR' and context.space_data.text
 
     @classmethod
@@ -36,11 +36,17 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
         sell = text.select_end_line
         curc = text.current_character
         selc = text.select_end_character
+        size = len(text.lines)
 
         if curl == sell and curc == selc:
             cls._whole_line = True
             bpy.ops.text.move(type='LINE_BEGIN')
             bpy.ops.text.move_select(type='NEXT_LINE')
+
+            # skip soft-wrapped lines and EOL
+            while (text.select_end_character and
+                   text.current_line_index < size - 1):
+                bpy.ops.text.move_select(type='NEXT_LINE')
         else:
             cls._whole_line = False
 
