@@ -16,7 +16,7 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
     Ctrl-C, Ctrl-X, Ctrl-V"""
     bl_idname = 'text.smart_cut_and_copy'
     bl_label = 'Smart Cut and Copy'
-    bl_optiosn = {'REGISTER', 'UNDO'}
+    bl_options = {'REGISTER', 'UNDO'}
 
     _actions = (
         ('CUT', 'Cut', '', 0),
@@ -40,10 +40,16 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
 
         if curl == sell and curc == selc:
             cls._whole_line = True
+
             bpy.ops.text.move(type='LINE_BEGIN')
+
+            # if line is soft-wrapped, move cursor to true start
+            while text.select_end_character:
+                bpy.ops.text.move(type='PREVIOUS_LINE')
+
             bpy.ops.text.move_select(type='NEXT_LINE')
 
-            # skip soft-wrapped lines and EOL
+            # if line is soft-wrapped, select until true end
             while (text.select_end_character and
                    text.current_line_index < size - 1):
                 bpy.ops.text.move_select(type='NEXT_LINE')
@@ -53,9 +59,6 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
     def execute(self, context):
         text = context.space_data.text
         whole_line = getattr(__class__, "_whole_line", False)
-
-        # workaround for buggy text editor undo
-        bpy.ops.ed.undo_push(message="Smart Cut/Copy")
 
         if self.action == 'CUT':
             self.prepare_cursor(text)
@@ -101,9 +104,9 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
 
 def classes():
     mod = globals().values()
-    return [i for i in mod if hasattr(i, 'mro')
-            and bpy.types.bpy_struct in i.mro()
-            and i.__module__ == __name__]
+    return [i for i in mod if hasattr(i, 'mro') and
+            bpy.types.bpy_struct in i.mro() and
+            i.__module__ == __name__]
 
 
 def register():
