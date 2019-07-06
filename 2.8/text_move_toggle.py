@@ -22,27 +22,34 @@ class TEXT_OT_move_toggle(bpy.types.Operator):
         return (context.area.type == 'TEXT_EDITOR' and
                 context.space_data.text)
 
-    def get_indent(self, body, tab):
+    def get_indent(self, text, tab):
         indent = 0
+        body = text.select_end_line.body
         while body.find(" " * tab, indent * tab) != -1:
             indent += 1
         return indent
 
     def execute(self, context):
-        tab = context.space_data.tab_width
-        text = context.space_data.text
-        caret = text.select_end_character
-        line = text.select_end_line
-        indent = self.get_indent(line.body, tab)
-        bpy_ops_text_move = bpy.ops.text.move
+        st = context.space_data
+        caret = st.text.select_end_character
+        indent = self.get_indent(st.text, st.tab_width)
+
+        if self.event.shift:
+            move = bpy.ops.text.move_select
+        else:
+            move = bpy.ops.text.move
 
         if indent:
-            if indent * tab < caret:
-                bpy_ops_text_move(type="LINE_BEGIN")
-                return bpy_ops_text_move(type="NEXT_WORD")
+            if indent * st.tab_width < caret:
+                move(type="LINE_BEGIN")
+                return move(type="NEXT_WORD")
             elif not caret:
-                return bpy_ops_text_move(type="NEXT_WORD")
-        return bpy_ops_text_move(type="LINE_BEGIN")
+                return move(type="NEXT_WORD")
+        return move(type="LINE_BEGIN")
+
+    def invoke(self, context, event):
+        self.event = event
+        return self.execute(context)
 
     @classmethod
     def _setup(cls):
@@ -53,6 +60,7 @@ class TEXT_OT_move_toggle(bpy.types.Operator):
 
         new = km.keymap_items.new
         kmi = new(cls.bl_idname, 'HOME', 'PRESS')
+        kmi = new(cls.bl_idname, 'HOME', 'PRESS', shift=1)
         cls._keymaps.append((km, kmi))
 
     @classmethod
@@ -64,9 +72,9 @@ class TEXT_OT_move_toggle(bpy.types.Operator):
 
 def classes():
     mod = globals().values()
-    return [i for i in mod if hasattr(i, 'mro')
-            and bpy.types.bpy_struct in i.mro()
-            and i.__module__ == __name__]
+    return [i for i in mod if hasattr(i, 'mro') and
+            bpy.types.bpy_struct in i.mro() and
+            i.__module__ == __name__]
 
 
 def register():
