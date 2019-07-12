@@ -126,8 +126,6 @@ def register():
 
     kmi_type = p.kmi_type or default_type
     kmi_value = p.kmi_value or default_value
-    print(kmi_value)
-    print(12345)
 
     alt = p.kmi_alt or 0
     ctrl = p.kmi_ctrl or 0
