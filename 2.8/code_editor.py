@@ -22,6 +22,9 @@ import blf
 import time
 import string
 import threading
+from gpu.shader import from_builtin
+from gpu_extras.batch import batch_for_shader
+from mathutils import Vector
 
 bl_info = {
     "name": "Code Editor",
@@ -36,6 +39,25 @@ bl_info = {
 # =====================================================
 #                      CODE EDITTING
 # =====================================================
+sh_2d = from_builtin('2D_UNIFORM_COLOR')
+sh_2d_uniform_float = sh_2d.uniform_float
+sh_2d_bind = sh_2d.bind
+
+
+def draw_lines_2d(seq, color):
+
+    batch = batch_for_shader(sh_2d, 'LINES', {'pos': seq})
+    sh_2d_bind()
+    sh_2d_uniform_float("color", [*color])
+    batch.draw(sh_2d)
+
+
+def draw_quads_2d(seq, color):
+    qseq, = [[x1, y1, y2, x1, y2, x2] for (x1, y1, y2, x2) in (seq,)]
+    batch = batch_for_shader(sh_2d, 'TRIS', {'pos': qseq})
+    sh_2d_bind()
+    sh_2d_uniform_float("color", [*color])
+    batch.draw(sh_2d)
 
 
 def custom_home(line, cursor_loc):
@@ -338,11 +360,8 @@ def draw_callback_px(self, context):
         """Drawing lines with polys, its faster"""
         x = (origin[0] + thickness) if vertical else (origin[0] + length)
         y = (origin[1] + length) if vertical else (origin[1] + thickness)
-        bgl.glBegin(bgl.GL_QUADS)
-        for v1, v2 in [origin, (x, origin[1]), (x, y), (origin[0], y)]:
-            bgl.glVertex2i(v1, v2)
-        bgl.glEnd()
-        return
+        seq = [origin, (x, origin[1]), (x, y), (origin[0], y)]
+        draw_quads_2d(seq, color)
 
     # abort if another text editor
     if self.area == context.area and self.window == context.window:
@@ -370,14 +389,20 @@ def draw_callback_px(self, context):
 
     # panel background box
     self.tab_width = round(dpi_r * 25) if (self.tabs and len(bpy.data.texts) > 1) else 0
-    bgl.glColor4f(self.background.r, self.background.g, self.background.b, (1-self.bg_opacity)*self.opacity)
-    bgl.glBegin(bgl.GL_QUADS)
-    for x, y in [(self.left_edge-self.tab_width, self.height),
-                 (self.right_edge, self.height),
-                 (self.right_edge, 0),
-                 (self.left_edge-self.tab_width, 0)]:
-        bgl.glVertex2i(x, y)
-    bgl.glEnd()
+
+    color = (
+        self.background.r,
+        self.background.g,
+        self.background.b,
+        (1 - self.bg_opacity) * self.opacity)
+
+    seq = [
+        (self.left_edge - self.tab_width, self.height),
+        (self.right_edge, self.height),
+        (self.right_edge, 0),
+        (self.left_edge - self.tab_width, 0)]
+
+    draw_quads_2d(seq, color)
 
     # line numbers background
     space = context.space_data
@@ -385,38 +410,47 @@ def draw_callback_px(self, context):
         lines = len(space.text.lines)
         lines_digits = len(str(lines)) if space.show_line_numbers else 0
         self.line_bar_width = int(dpi_r*5)+cw*(lines_digits)
-        bgl.glColor4f(self.background.r, self.background.g, self.background.b, 1)
-        bgl.glBegin(bgl.GL_QUADS)
-        for x, y in [(0, self.height), (self.line_bar_width, self.height), (self.line_bar_width, 0), (0, 0)]:
-            bgl.glVertex2i(x, y)
-        bgl.glEnd()
+
+        color = (
+            self.background.r,
+            self.background.g,
+            self.background.b,
+            1)
+
+        seq = [
+            (0, self.height),
+            (self.line_bar_width, self.height),
+            (self.line_bar_width, 0),
+            (0, 0)]
+
+        draw_quads_2d(seq, color)
+
         # shadow
         bgl.glLineWidth(1.0 * dpi_r)
         for id, intensity in enumerate([0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]):
-            bgl.glColor4f(0.0, 0.0, 0.0, intensity)
-            bgl.glBegin(bgl.GL_LINE_STRIP)
-            for x, y in [(self.line_bar_width+id, 0),
-                         (self.line_bar_width+id, self.height)]:
-                bgl.glVertex2i(x, y)
-            bgl.glEnd()
+            color = 0.0, 0.0, 0.0, intensity
+
+            seq = [
+                (self.line_bar_width + id, 0),
+                (self.line_bar_width + id, self.height)]
+
+            draw_lines_2d(seq, color)
 
     # minimap shadow
     for id, intensity in enumerate([0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]):
-        bgl.glColor4f(0.0, 0.0, 0.0, intensity*self.opacity)
-        bgl.glBegin(bgl.GL_LINE_STRIP)
-        for x, y in [(self.left_edge-id-self.tab_width, 0),
-                     (self.left_edge-id-self.tab_width, self.height)]:
-            bgl.glVertex2i(x, y)
-        bgl.glEnd()
+        color = 0.0, 0.0, 0.0, intensity * self.opacity
+
+        seq = [
+            (self.left_edge - id - self.tab_width, 0),
+            (self.left_edge - id - self.tab_width, self.height)]
+
+        draw_lines_2d(seq, color)
 
     # divider
     if self.tab_width:
-        bgl.glColor4f(0.0, 0.0, 0.0, 0.2*self.opacity)
-        bgl.glBegin(bgl.GL_LINE_STRIP)
-        for x, y in [(self.left_edge, 0),
-                     (self.left_edge, self.height)]:
-            bgl.glVertex2i(x, y)
-        bgl.glEnd()
+        color = 0.0, 0.0, 0.0, 0.2 * self.opacity
+        seq = [(self.left_edge, 0), (self.left_edge, self.height)]
+        draw_lines_2d(seq, color)
 
     # if there is text in window
     if space.text and self.opacity:
@@ -428,21 +462,19 @@ def draw_callback_px(self, context):
         minimap_bot_line = int((self.height+self.slide)/mlh)
 
         # draw minimap visible box
-        if self.in_minimap:
-            bgl.glColor4f(1.0, 1.0, 1.0, 0.1*self.opacity)
-        else:
-            bgl.glColor4f(1.0, 1.0, 1.0, 0.07*self.opacity)
-        bgl.glBegin(bgl.GL_QUADS)
-        for x, y in [(self.left_edge, self.height-mlh*space.top + self.slide),
-                     (self.right_edge, self.height-mlh*space.top + self.slide),
-                     (self.right_edge, self.height-mlh*(space.top+space.visible_lines) + self.slide),
-                     (self.left_edge, self.height-mlh*(space.top+space.visible_lines) + self.slide)]:
-            bgl.glVertex2i(x, y)
-        bgl.glEnd()
+        alpha = 0.1 if self.in_minimap else 0.07
+        color = 1.0, 1.0, 1.0, alpha * self.opacity
+
+        seq = [(self.left_edge, self.height - mlh * space.top + self.slide),
+               (self.right_edge, self.height - mlh * space.top + self.slide),
+               (self.right_edge, self.height - mlh * (space.top + space.visible_lines) + self.slide),
+               (self.left_edge, self.height - mlh * (space.top + space.visible_lines) + self.slide)]
+
+        draw_quads_2d(seq, color)
 
         # draw minimap code
         for segment in self.segments[:-1]:
-            bgl.glColor4f(segment['col'][0], segment['col'][1], segment['col'][2], 0.4*self.opacity)
+            color = segment['col'][0], segment['col'][1], segment['col'][2], 0.4*self.opacity
             for id, element in enumerate(segment['elements'][minimap_top_line:minimap_bot_line]):
                 loc_y = mlh*(id+minimap_top_line+3) - self.slide
                 for sub_element in element:
@@ -451,108 +483,113 @@ def draw_callback_px(self, context):
                     int(0.5 * mlh))
 
         # minimap code marks
-        bgl.glColor4f(self.segments[-2]['col'][0],
-                      self.segments[-2]['col'][1],
-                      self.segments[-2]['col'][2],
-                      0.3*self.block_trans*self.opacity)
+        color = (self.segments[-2]['col'][0],
+                 self.segments[-2]['col'][1],
+                 self.segments[-2]['col'][2],
+                 0.3 * self.block_trans * self.opacity)
         for id, element in enumerate(self.segments[-2]['elements']):
             for sub_element in element:
-                if sub_element[2] >= space.top or id < space.top+space.visible_lines:
-                    draw_line((self.left_edge+int(mcw*(sub_element[0]+4)), self.height-mlh*(id+3)+self.slide),
-                               -int(mlh*(sub_element[2]-id-1)),
-                               int(0.5 * mlh),
-                               True)
+                if sub_element[2] >= space.top or id < space.top + space.visible_lines:
+                    draw_line(
+                        (self.left_edge + int(mcw * (sub_element[0] + 4)),
+                         self.height - mlh * (id + 3) + self.slide),
+                        -int(mlh * (sub_element[2] - id - 1)),
+                        int(0.5 * mlh),
+                        True)
 
     # draw dotted indentation marks
     bgl.glLineWidth(1.0 * dpi_r)
     if space.text:
-        bgl.glColor4f(self.segments[0]['col'][0],
-                      self.segments[0]['col'][1],
-                      self.segments[0]['col'][2],
-                      self.indent_trans)
-        for id, element in enumerate(self.segments[-1]['elements'][space.top:space.top+space.visible_lines]):
+        color = (self.segments[0]['col'][0],
+                 self.segments[0]['col'][1],
+                 self.segments[0]['col'][2],
+                 self.indent_trans)
+        for id, element in enumerate(self.segments[-1]['elements'][
+                space.top:space.top + space.visible_lines]):
             loc_y = id
             for sub_element in element:
-                draw_line((int(dpi_r*10)+cw*(lines_digits+sub_element[0]+4), self.height-ch*(loc_y)),
-                           -ch,
-                           int(1 * dpi_r),
-                           True)
+                draw_line((
+                    int(dpi_r * 10) + cw * (lines_digits + sub_element[0] + 4),
+                    self.height - ch * (loc_y)),
+                    -ch,
+                    int(1 * dpi_r),
+                    True)
 
-        # draw code block marks
-        bgl.glColor4f(self.segments[-2]['col'][0],
-                      self.segments[-2]['col'][1],
-                      self.segments[-2]['col'][2],
-                      self.block_trans)
+    #     draw code block marks
+        color = (self.segments[-2]['col'][0],
+                 self.segments[-2]['col'][1],
+                 self.segments[-2]['col'][2],
+                 self.block_trans)
         for id, element in enumerate(self.segments[-2]['elements']):
             for sub_element in element:
                 if sub_element[2] >= space.top or id < space.top+space.visible_lines:
-                    bgl.glBegin(bgl.GL_LINE_STRIP)
-                    bgl.glVertex2i(int(dpi_r*10+cw*(lines_digits+sub_element[0])),
-                                   self.height-ch*(id+1-space.top))
-                    bgl.glVertex2i(int(dpi_r*10+cw*(lines_digits+sub_element[0])),
-                                   self.height-int(ch*(sub_element[2]-space.top)))
-                    bgl.glVertex2i(int(dpi_r*10+cw*(lines_digits+sub_element[0]+1)),
-                                   self.height-int(ch*(sub_element[2]-space.top)))
-                    bgl.glEnd()
+
+                    seq = [
+                        (int(dpi_r*10+cw*(lines_digits+sub_element[0])), self.height-ch*(id+1-space.top)),
+                        (int(dpi_r*10+cw*(lines_digits+sub_element[0])), self.height-int(ch*(sub_element[2]-space.top))),
+                        (int(dpi_r*10+cw*(lines_digits+sub_element[0]+1)), self.height-int(ch*(sub_element[2]-space.top)))
+                    ]
+                    draw_lines_2d(seq, color)
 
     # tab dividers
     if self.tab_width and self.opacity:
         self.tab_height = min(200, int(self.height/len(bpy.data.texts)))
         y_loc = self.height-5
         for text in bpy.data.texts:
-            # tab selection
+        #     # tab selection
             if text.name == self.in_tab:
-                bgl.glColor4f(1.0, 1.0, 1.0, 0.05*self.opacity)
-                bgl.glBegin(bgl.GL_QUADS)
-                for x, y in [(self.left_edge-self.tab_width, y_loc),
-                             (self.left_edge, y_loc),
-                             (self.left_edge, y_loc-self.tab_height),
-                             (self.left_edge-self.tab_width, y_loc-self.tab_height)]:
-                    bgl.glVertex2i(x, y)
-                bgl.glEnd()
-            # tab active
+                color = 1.0, 1.0, 1.0, 0.05 * self.opacity
+                seq = [(self.left_edge-self.tab_width, y_loc),
+                       (self.left_edge, y_loc),
+                       (self.left_edge, y_loc-self.tab_height),
+                       (self.left_edge-self.tab_width, y_loc-self.tab_height)]
+
+                draw_quads_2d(seq, color)
+
+        #     tab active
             if context.space_data.text and text.name == context.space_data.text.name:
-                bgl.glColor4f(1.0, 1.0, 1.0, 0.05*self.opacity)
-                bgl.glBegin(bgl.GL_QUADS)
-                for x, y in [(self.left_edge-self.tab_width, y_loc),
-                             (self.left_edge, y_loc),
-                             (self.left_edge, y_loc-self.tab_height),
-                             (self.left_edge-self.tab_width, y_loc-self.tab_height)]:
-                    bgl.glVertex2i(x, y)
-                bgl.glEnd()
-            bgl.glColor4f(0.0, 0.0, 0.0, 0.2*self.opacity)
+                color = 1.0, 1.0, 1.0, 0.05*self.opacity
+
+                seq = [(self.left_edge-self.tab_width, y_loc),
+                       (self.left_edge, y_loc),
+                       (self.left_edge, y_loc-self.tab_height),
+                       (self.left_edge-self.tab_width, y_loc-self.tab_height)]
+
+                draw_quads_2d(seq, color)
+
+            color = 0.0, 0.0, 0.0, 0.2*self.opacity
             y_loc -= self.tab_height
-            bgl.glBegin(bgl.GL_LINE_STRIP)
-            for x, y in [(self.left_edge-self.tab_width, y_loc),
-                         (self.left_edge, y_loc)]:
-                bgl.glVertex2i(x, y)
-            bgl.glEnd()
+
+            seq = [(self.left_edge-self.tab_width, y_loc), (self.left_edge, y_loc)]
+
+            draw_lines_2d(seq, color)
 
     # draw fps
-#    bgl.glColor4f(1, 1, 1, 0.2)
-#    blf.size(font_id, fs, int(dpi_r*72))
-#    blf.position(font_id, self.left_edge-50, 5, 0)
-#    blf.draw(font_id, str(round(1/(time.clock() - start),3)))
+    blf.color(font_id, 1, 1, 1, 0.2)
+    blf.size(font_id, fs, int(dpi_r*72))
+    blf.position(font_id, self.left_edge-50, 5, 0)
+    blf.draw(font_id, str(round(1/(time.clock() - start),3)))
 
     # draw line numbers
     if space.text:
-        bgl.glColor4f(self.segments[0]['col'][0],
-                      self.segments[0]['col'][1],
-                      self.segments[0]['col'][2],
-                      0.5)
+        blf.color(font_id, self.segments[0]['col'][0],
+                 self.segments[0]['col'][1],
+                 self.segments[0]['col'][2],
+                 0.5)
         for id in range(space.top, min(space.top+space.visible_lines+1, lines+1)):
             if self.in_line_bar and self.segments[-2]['elements'][id-1]:
-                bgl.glColor4f(self.segments[-2]['col'][0],
-                              self.segments[-2]['col'][1],
-                              self.segments[-2]['col'][2],
-                              1)
+                blf.color(font_id, self.segments[-2]['col'][0],
+                          self.segments[-2]['col'][1],
+                          self.segments[-2]['col'][2],
+                          1)
+
                 blf.position(font_id, 2+int(0.5*cw*(len(str(lines))-1)), self.height-ch*(id-space.top)+3, 0)
-                #blf.draw(font_id, '→')
+                blf.draw(font_id, '→')
                 blf.draw(font_id, '↓')
-                bgl.glColor4f(self.segments[0]['col'][0],
-                      self.segments[0]['col'][1],
-                      self.segments[0]['col'][2],
-                      0.5)
+                blf.color(font_id, self.segments[0]['col'][0],
+                          self.segments[0]['col'][1],
+                          self.segments[0]['col'][2],
+                          0.5)
             else:
                 blf.position(font_id, 2+int(0.5*cw*(len(str(lines))-len(str(id)))), self.height-ch*(id-space.top)+3, 0)
                 blf.draw(font_id, str(id))
@@ -567,10 +604,11 @@ def draw_callback_px(self, context):
             name = text.name[:text_max_length]
             if text_max_length < len(text.name):
                 name += '...'
-            bgl.glColor4f(self.segments[0]['col'][0],
-                          self.segments[0]['col'][1],
-                          self.segments[0]['col'][2],
-                          (0.7 if text.name == self.in_tab else 0.4)*self.opacity)
+            blf.color(font_id, self.segments[0]['col'][0],
+                      self.segments[0]['col'][1],
+                      self.segments[0]['col'][2],
+                      (0.7 if text.name == self.in_tab else 0.4)*self.opacity)
+                         
             blf.position(font_id,
                          self.left_edge-round((self.tab_width-ch)/2.0)-5,
                          round(y_loc-(self.tab_height/2)-cw*len(name)/2),
@@ -579,7 +617,6 @@ def draw_callback_px(self, context):
             y_loc -= self.tab_height
 
     # restore opengl defaults
-    bgl.glColor4f(0, 0, 0, 1)
     bgl.glLineWidth(1.0)
     bgl.glDisable(bgl.GL_BLEND)
     blf.disable(font_id, blf.ROTATION)
@@ -647,7 +684,10 @@ class CodeEditor(bpy.types.Operator):
 
                 if ((self.left_edge - self.tab_width < event.mouse_region_x < self.left_edge) and
                      (0 < event.mouse_region_y < self.height)):
-                    tab_id = int((self.height-event.mouse_region_y) / self.tab_height)
+                    try:
+                        tab_id = int((self.height-event.mouse_region_y) / self.tab_height)
+                    except ZeroDivisionError:
+                        tab_id = 0
                     if tab_id < len(bpy.data.texts):
                         self.in_tab = bpy.data.texts[tab_id].name
                     else:
