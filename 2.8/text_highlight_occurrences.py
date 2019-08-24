@@ -143,6 +143,7 @@ def get_y_offset(rh, lineh, fs, yco):
 
 def get_non_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     scrollpts = []
+    scr_append = scrollpts.append
     pts = []
     append = pts.append
     top = st.top
@@ -150,14 +151,20 @@ def get_non_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     size = len(substr)
     region = bpy.context.area.regions[-1]
     rw = region.width
+    rh = region.height
     loc = st.region_location_from_cursor
-    cw = loc(0, 1)[0] - loc(0, 0)[0]
+    firstxy = loc(0, 0)
+    maxy = firstxy[1]
+    cw = loc(0, 1)[0] - firstxy[0]
     # cw = round(blf_dimensions(1, " ")[0])
     cspan = cw * size
     yco = range(loc(top, 0)[1], -lineh, -lineh)
     y_offset = get_y_offset(region.height, lineh, st.font_size, yco)
     xoffset += (st.show_line_numbers and cw * len(repr(len(lines)))) or 0
+    top, pxspan, miny = calc_top(top, maxy, len(st.text.lines), loc, lines, lineh, rh)
     viewmax = rw - (wunits // 2)
+    if p.show_in_scroll:
+        get_scroll_pts(st, substr, scr_append, wunits, pxspan, region, lineh)
 
     for idx, line in enumerate(lines[top:top + st.visible_lines + 2], top):
         bod = line.body
@@ -221,6 +228,91 @@ def indexof(lines, line, lenl, top=0):
             return idx
 
 
+def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
+    top_margin = int(0.4 * wu)
+
+    # x offset for scrollbar widget start
+    sx_2 = int(region.width - 0.2 * wu)
+    sx_1 = sx_2 - top_margin + 2
+    pxavail = region.height - top_margin * 2
+    wrh = wrhorg = (pxspan // lineh) + 1  # wrap height in lines
+    # wrh = pxspan // lineh + 1  # wrap height in lines
+    # endl_idx = indexof(lines, txt.select_end_line, lenl, top)
+    # current line position with wrap offset
+    # curlwofs = abs(maxy - loc(txt.current_line_index, 0)[1]) / lineh
+    # sellwofs = abs(maxy - loc(endl_idx, 0)[1]) / lineh
+    # scrollmax = abs(maxy - maxy) / lineh
+    # scrollmin = abs(maxy - miny) / lineh
+    scrolltop = region.height - top_margin
+
+    vispan = st.top + st.visible_lines
+    blank_lines = st.visible_lines // 2
+    if wrh + blank_lines < vispan:
+        blank_lines = vispan - wrh
+
+    wrh += blank_lines
+    # barh = int((vis * pxavail) / wrh) if wrh > 0 else 0
+    # pxdif = 0
+
+    # if barh < 20:
+    #     pxdif, barh = 20 - barh, 20
+
+    # pxmrg = pxavail - pxdif
+    # if wrh > 0:
+    #     bar1 = int((pxmrg * stp) / wrh)
+    # else:
+    #     bar1 = barh = 0
+
+    j = 2 + wrhorg / len(st.text.lines) * pxavail
+    substr_s = substr.lower()
+    for i, line in enumerate(st.text.lines, 1):
+        if substr_s in line.body.lower():
+            y = scrolltop - 2 - (i * j) // wrh
+            append((
+                Vector((sx_1, y)),
+                Vector((sx_2, y))))
+
+    # barspan = bar1 + barh
+    # lhl1, lhl2 = sorted((curlwofs, sellwofs))
+    # hl1 = (lhl1 * pxavail) // wrh
+    # hl2 = (lhl2 * pxavail) // wrh
+
+    # if pxdif > 0:
+    #     if lhl1 >= stp and lhl1 <= vispan:
+    #         hl1 = int(((pxmrg * lhl1) / wrh) +
+    #                     (pxdif * (lhl1 - stp) / vis))
+    #     elif lhl1 > vispan and hl1 < barspan and hl1 > bar1:
+    #         hl1 = barspan
+    #     elif lhl2 > stp and lhl1 < stp and hl1 > bar1:
+    #         hl1 = bar1
+    #     if hl2 <= hl1:
+    #         hl2 = hl1 + 2
+    #     if lhl2 >= stp and lhl2 <= vispan:
+    #         hl2 = int(((pxmrg * lhl2) / wrh) +
+    #                     (pxdif * (lhl2 - stp) / vis))
+    #     elif lhl2 < stp and hl2 >= bar1 - 2 and hl2 < barspan:
+    #         hl2 = bar1
+    #     elif lhl2 > vispan and lhl1 < stp + vis and hl2 < barspan:
+    #         hl2 = barspan
+    #     if hl2 <= hl1:
+    #         hl1 = hl2 - 2
+    # if hl2 - hl1 < 2:
+    #     hl2 = int(hl1 + 2)
+
+    # keep as reference
+
+    # hlstart = (scrollmax * pxavail) // wrh
+    # hlend = (scrollmin * pxavail) // wrh
+    # sy_2 = scrolltop - 3
+    # sy_1 = sy_2 - hlend
+    # scr_append((Vector((sx_1, sy_2)), Vector((sx_2, sy_2)), ""))
+    # scr_append((Vector((sx_1, sy_1)), Vector((sx_2, sy_1)), ""))
+
+    # hlminy = scrolltop - hl2 - 1
+    # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy))))
+    # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy)), ""))
+
+
 def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
 
     loc = st.region_location_from_cursor
@@ -240,11 +332,6 @@ def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     rh, rw = region.height, region.width
     # rlimit = ry + rh
     fs = st.font_size
-    top_margin = int(0.4 * wunits)
-
-    # x offset for scrollbar widget start
-    sx_2 = int(rw - 0.2 * wunits)
-    sx_1 = sx_2 - top_margin + 2
 
     # add to x offset for text when line numbers are visible
     xoffset += (st.show_line_numbers and cw * len(repr(lenl))) or 0
@@ -259,16 +346,6 @@ def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     top, pxspan, miny = calc_top(stp, maxy, lenl, loc, lines, lineh, rh)
     size = len(substr)
     # calc_scroll = perf_counter()
-    pxavail = rh - top_margin * 2
-    wrh = wrhorg = (pxspan // lineh) + 1  # wrap height in lines
-    # wrh = pxspan // lineh + 1  # wrap height in lines
-    endl_idx = indexof(lines, txt.select_end_line, lenl, top)
-    # current line position with wrap offset
-    curlwofs = abs(maxy - loc(txt.current_line_index, 0)[1]) / lineh
-    sellwofs = abs(maxy - loc(endl_idx, 0)[1]) / lineh
-    # scrollmax = abs(maxy - maxy) / lineh
-    # scrollmin = abs(maxy - miny) / lineh
-    scrolltop = rh - top_margin
 
     vis = st.visible_lines
     yco = range(loc(top, 0)[1], -100000, -lineh)
@@ -276,72 +353,7 @@ def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     tsize = len(yco)
     y_offset = get_y_offset(rh, lineh, fs, yco)
     if p.show_in_scroll:
-        vispan = stp + vis
-        blank_lines = vis // 2
-        if wrh + blank_lines < vispan:
-            blank_lines = vispan - wrh
-
-        wrh += blank_lines
-        barh = int((vis * pxavail) / wrh) if wrh > 0 else 0
-        pxdif = 0
-
-        if barh < 20:
-            pxdif, barh = 20 - barh, 20
-
-        pxmrg = pxavail - pxdif
-        if wrh > 0:
-            bar1 = int((pxmrg * stp) / wrh)
-        else:
-            bar1 = barh = 0
-
-        j = 2 + wrhorg / lenl * pxavail
-        substr_s = substr.lower()
-        for i, line in enumerate(lines, 1):
-            if substr_s in line.body.lower():
-                y = scrolltop - 2 - (i * j) // wrh
-                scr_append((
-                    Vector((sx_1, y)),
-                    Vector((sx_2, y))))
-
-        barspan = bar1 + barh
-        lhl1, lhl2 = sorted((curlwofs, sellwofs))
-        hl1 = (lhl1 * pxavail) // wrh
-        hl2 = (lhl2 * pxavail) // wrh
-
-        if pxdif > 0:
-            if lhl1 >= stp and lhl1 <= vispan:
-                hl1 = int(((pxmrg * lhl1) / wrh) +
-                          (pxdif * (lhl1 - stp) / vis))
-            elif lhl1 > vispan and hl1 < barspan and hl1 > bar1:
-                hl1 = barspan
-            elif lhl2 > stp and lhl1 < stp and hl1 > bar1:
-                hl1 = bar1
-            if hl2 <= hl1:
-                hl2 = hl1 + 2
-            if lhl2 >= stp and lhl2 <= vispan:
-                hl2 = int(((pxmrg * lhl2) / wrh) +
-                          (pxdif * (lhl2 - stp) / vis))
-            elif lhl2 < stp and hl2 >= bar1 - 2 and hl2 < barspan:
-                hl2 = bar1
-            elif lhl2 > vispan and lhl1 < stp + vis and hl2 < barspan:
-                hl2 = barspan
-            if hl2 <= hl1:
-                hl1 = hl2 - 2
-        if hl2 - hl1 < 2:
-            hl2 = int(hl1 + 2)
-
-        # keep as reference
-
-        # hlstart = (scrollmax * pxavail) // wrh
-        # hlend = (scrollmin * pxavail) // wrh
-        # sy_2 = scrolltop - 3
-        # sy_1 = sy_2 - hlend
-        # scr_append((Vector((sx_1, sy_2)), Vector((sx_2, sy_2)), ""))
-        # scr_append((Vector((sx_1, sy_1)), Vector((sx_2, sy_1)), ""))
-
-        # hlminy = scrolltop - hl2 - 1
-        # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy))))
-        # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy)), ""))
+        get_scroll_pts(st, substr, scr_append, wunits, pxspan, region, lineh)
 
     totwrap = wrap = woffset = 0
     for l_idx, line in enumerate(lines[top:top + vis + 4], top):
@@ -507,7 +519,11 @@ def draw_highlights(context):
 class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
     bl_idname = __name__
     from bpy.props import (
-        BoolProperty, FloatVectorProperty, EnumProperty, IntProperty)
+        BoolProperty,
+        FloatVectorProperty,
+        EnumProperty,
+        IntProperty,
+        FloatProperty)
 
     line_thickness: IntProperty(default=1, name="Line Thickness", min=1, max=4)
     show_in_scroll: BoolProperty(
@@ -533,6 +549,10 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
     fg_col: FloatVectorProperty(
         description='Foreground color', name='Foreground', size=4, min=0,
         default=(1, 1, 1, 1), subtype='COLOR_GAMMA', max=1)
+
+    scroll_alpha: FloatProperty(
+        description="Opacity for scrollbar highlights"
+    )
 
     draw_type: EnumProperty(
         description="Draw type for highlights",
