@@ -1,5 +1,5 @@
 import bpy
-
+from bpy_restrict_state import _RestrictContext
 
 bl_info = {
     "name": "*Run In Console",
@@ -12,9 +12,23 @@ bl_info = {
     "category": "Development"
 }
 
+_print = None
 _console = None
 _preferences = None
-c_dict = dict()
+
+
+def get_builtins():
+    import sys
+    return sys.modules['builtins']
+
+
+class Context(dict):
+    def __init__(self):
+        super(__class__, self).__init__()
+        self.__dict__ = self
+
+
+c_dict = Context()
 
 
 def get_bl_console():
@@ -27,7 +41,7 @@ def get_bl_console():
 def get_console_spaces(context):
     """
     Three things can happen:
-    1. A console is found, its area, region and space_data is returned.
+    1. A console is found, its area, region and space_data are returned.
     2. Multiple consoles are found, one is picked out based on
         either its list index or redirect tag.
     3. No consoles are found and the operator cancels.
@@ -50,14 +64,26 @@ def get_console_spaces(context):
     return
 
 
+def set_spaces(spaces):
+    for k, v in zip(('area', 'space_data', 'region'), spaces):
+        c_dict[k] = v
+
+
 def scrollback_append(result, c_dict=c_dict, type='INFO'):
     """Append text to the console using bpy.ops.scrollback_append"""
+    spaces = get_console_spaces(c_dict)
+    if not spaces:  # default to builtin print if no console area exists
+        return _print(*result)
 
+    set_spaces(spaces)
     scrollback = bpy.ops.console.scrollback_append
     for l in result.split("\n"):
         text = l.replace("\t", "    ")
 
         try:
+            # TODO defer scrollbacks until context is back
+            if isinstance(bpy.context, _RestrictContext):
+                continue
             scrollback(c_dict, text=text, type=type)
 
         except RuntimeError:
@@ -67,19 +93,36 @@ def scrollback_append(result, c_dict=c_dict, type='INFO'):
                 first_interval=0.02)
 
 
-def printc(*values: object, sep=' ', end='', use_repr=False):
-    if not values:
+def printc(*args, **kwargs):
+    sep = kwargs.get('sep', " ")
+    end = kwargs.get('end', "\n")
+    spaces = get_console_spaces(c_dict)
+    if not spaces:  # default to builtin print if no console area exists
+        return _print(*args, **kwargs)
+    if not args:
         scrollback_append("\n", type='OUTPUT')
         return
-    fn = repr if use_repr else str
+    scrollback_append(sep.join(str(v) for v in args) + end, type='OUTPUT')
 
-    scrollback_append(sep.join(fn(v) for v in values) + end, type='OUTPUT')
+
+def update_assume_print(self, context):
+    builtins = get_builtins()
+    if self.assume_print:
+        builtins.print = printc
+        return
+    builtins.print = _print
 
 
 class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
     bl_idname = __name__
 
     from bpy.props import BoolProperty
+
+    assume_print: bpy.props.BoolProperty(
+        name="Assume Print",
+        default=False,
+        update=update_assume_print
+    )
 
     persistent: BoolProperty(
         default=False, name="Persistent", description="Access script bindings "
@@ -242,7 +285,7 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
 
         bpy.types.TEXT_HT_header.append(cls.draw_button)
         bpy.types.CONSOLE_HT_header.append(cls.draw_redirect)
-        bpy.types.TEXT_MT_toolbox.append(cls.draw_button)
+        bpy.types.TEXT_MT_context_menu.append(cls.draw_button)
 
     @classmethod
     def _remove(cls):
@@ -253,7 +296,7 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
 
         bpy.types.TEXT_HT_header.remove(cls.draw_button)
         bpy.types.CONSOLE_HT_header.remove(cls.draw_redirect)
-        bpy.types.TEXT_MT_toolbox.remove(cls.draw_button)
+        bpy.types.TEXT_MT_context_menu.remove(cls.draw_button)
 
     @classmethod
     def any_console(cls, context):
@@ -278,7 +321,7 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
 
     def draw_button(self, context):
         row = self.layout.row()
-        text = "" if "toolbox" not in self.bl_idname else "Run In Console"
+        text = "" if "context_menu" not in self.bl_idname else "Run In Console"
         row.operator("text.run_in_console", text=text, icon='CONSOLE')
 
         if not TEXT_OT_run_in_console.any_console(context):
@@ -288,12 +331,8 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
         spaces = get_console_spaces(context)
 
         if spaces:
-            # keep a context dictionary on module level so we don't
-            # have topass it everywhere or generate new each time
             c_dict.update(**context.copy())
-            for k, v in zip(('area', 'space_data', 'region'), spaces):
-                c_dict[k] = v
-
+            set_spaces(spaces)
             _console.runtextblock(context.space_data.text)
             return {'FINISHED'}
         return {'CANCELLED'}
@@ -316,6 +355,7 @@ class TEXT_PT_run_in_console_settings(bpy.types.Panel):
         prefs = _preferences
 
         col = layout.column()
+        col.prop(prefs, "assume_print")
 
         col.label(text="Run In Console Settings")
         col.prop(prefs, "persistent")
@@ -365,8 +405,11 @@ def list_consoles(context):
 
 def verify_index(context, consoles):
     """Ensure console index is valid"""
-    if not getattr(context, 'screen'):  # don't verify during redraw
-        return -1
+    if not getattr(context, 'screen', False):  # don't verify during redraw
+        context = bpy.context
+        c_dict.update(**context.copy())
+        if not getattr(context, 'screen', False):
+            return -1
 
     index = context.screen.get('console_redirect', None)
     max_index = len(consoles) - 1
@@ -393,43 +436,71 @@ def get_console_index(context):
 
 
 def classes():
+    from bpy.types import bpy_struct
     mod = globals().values()
 
     return [i for i in mod if hasattr(i, 'mro') and
-            bpy.types.bpy_struct in i.mro() and
+            bpy_struct in i.mro() and
             i.__module__ == __name__]
 
 
-def _setglobals(**kwargs):
-    for k, v in kwargs.items():
-        globals()[k] = v
-
-
-def register():
-
-    for cls in classes():
-        bpy.utils.register_class(cls)
-        if hasattr(cls, '_setup'):
-            cls._setup()
-
-    addons = bpy.context.preferences.addons
-    _setglobals(_preferences=addons[__name__].preferences)
-    _setglobals(_console=Console())
+def _module():
+    from sys import modules
+    return modules[__name__]
 
 
 def delkey(path, key):
     del path[key]
 
 
+def set_builtin_print(remove=False):
+    from sys import modules
+    b = get_builtins().__dict__
+
+    if remove:
+        org = b.get('_print', 0)
+        if org:
+            b['print'] = org
+            del b['_print']
+        return
+
+    modules[__name__]._print = b['_print'] = b['print']
+
+
+def register():
+    set_builtin_print()
+    for cls in classes():
+        bpy.utils.register_class(cls)
+        if hasattr(cls, '_setup'):
+            cls._setup()
+
+    from bpy import context
+    addons = context.preferences.addons
+    prefs = addons[__name__].preferences
+
+    module = _module()
+    module._preferences = prefs
+    module._console = Console()
+    c_dict.update(window_manager=context.window_manager)
+
+    update_assume_print(prefs, context)
+
+
 def unregister():
+    # restore print
+    set_builtin_print(False)
+
     for cls in reversed(classes()):
         if hasattr(cls, '_remove'):
             cls._remove()
 
         bpy.utils.unregister_class(cls)
 
-    del globals()['_preferences']
-    del globals()['_console']
+    # clean up module refs
+    module = _module()
+    module._preferences = None
+    module._console = None
 
+    # clean up custom properties
     for w in bpy.context.window_manager.windows:
-        w.screen.pop('console_redirect', ...)
+        w.screen.pop('console_redirect', None)
