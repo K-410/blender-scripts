@@ -513,6 +513,27 @@ def draw_highlights(context):
     # print("Total Time:", round((perf_counter() - t) * 1000, 2), "ms")
 
 
+def update_highlight(self, context):
+    if self.enable:
+        bpy.app.timers.register(
+            lambda: setattr(
+                HighlightOccurrencesPrefs,
+                "handler",
+                bpy.types.SpaceTextEditor.draw_handler_add(
+                    draw_highlights,
+                    (bpy.context,),
+                    'WINDOW', 'POST_PIXEL')) or
+                redraw(bpy.context))
+        return
+
+    elif hasattr(HighlightOccurrencesPrefs, "handler"):
+        try:
+            bpy.types.SpaceTextEditor.draw_handler_remove(
+                HighlightOccurrencesPrefs.handler, 'WINDOW')
+        except ValueError:
+            pass
+
+
 class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
     bl_idname = __name__
     from bpy.props import (
@@ -543,6 +564,10 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
             (1, 1, 1, 1),
             (.64, .27, .27, 1),
             (1, 0.21, .21, 0.5))}
+
+    enable: BoolProperty(
+        name="Highlight Occurrences", description="Enable highlighting",
+        default=True, update=update_highlight)
 
     line_thickness: IntProperty(default=2, name="Line Thickness", min=1, max=4)
     show_in_scroll: BoolProperty(
@@ -624,6 +649,10 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
             col = split.column()
             col.prop(self, "scroll_col")
 
+    def draw_menu(self, context):
+        prefs = bpy.context.preferences.addons[__name__].preferences
+        self.layout.prop(prefs, "enable")
+
 
 def register():
     bpy.utils.register_class(HighlightOccurrencesPrefs)
@@ -631,24 +660,17 @@ def register():
     import sys
     prefs = bpy.context.preferences.addons[__name__].preferences
     sys.modules[__name__].p = prefs
-    bpy.app.timers.register(
-        lambda: setattr(
-            HighlightOccurrencesPrefs,
-            "handler",
-            bpy.types.SpaceTextEditor.draw_handler_add(
-                draw_highlights,
-                (bpy.context,),
-                'WINDOW', 'POST_PIXEL')) or
-            redraw(bpy.context)
-    )
+    bpy.types.TEXT_MT_view.append(HighlightOccurrencesPrefs.draw_menu)
+    update_highlight(prefs, bpy.context)
+
 
 
 def unregister():
-    try:
-        bpy.types.SpaceTextEditor.draw_handler_remove(
-            HighlightOccurrencesPrefs.handler, 'WINDOW')
-    except ValueError:
-        pass
+    bpy.types.TEXT_MT_view.remove(HighlightOccurrencesPrefs.draw_menu)
+    prefs = bpy.context.preferences.addons[__name__].preferences
+    if prefs.enable:
+        prefs.enable = False
+        update_highlight(prefs, bpy.context)
 
     bpy.utils.unregister_class(HighlightOccurrencesPrefs)
     redraw(getattr(bpy, "context"))
