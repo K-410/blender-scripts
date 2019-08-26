@@ -77,20 +77,23 @@ def scrollback_append(result, c_dict=c_dict, type='INFO'):
 
     set_spaces(spaces)
     scrollback = bpy.ops.console.scrollback_append
+    if result.endswith("\n"):
+        result = result[:-1]
     for l in result.split("\n"):
         text = l.replace("\t", "    ")
 
         try:
-            # TODO defer scrollbacks until context is back
+            # TODO defer scrollbacks until context is free
             if isinstance(bpy.context, _RestrictContext):
                 continue
+                # raise Exception("RESTRICT")
             scrollback(c_dict, text=text, type=type)
 
         except RuntimeError:
             bpy.app.timers.register(
                 lambda: scrollback_append(
                     result, c_dict=c_dict, type='INFO'),
-                first_interval=0.02)
+                first_interval=0.5)
 
 
 def printc(*args, **kwargs):
@@ -119,7 +122,9 @@ class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
     from bpy.props import BoolProperty
 
     assume_print: bpy.props.BoolProperty(
-        name="Assume Print",
+        name="Assume Print (WARNING: Unstable)",
+        description="Hijack prints from other scripts and display them in "
+        "Blender's\nconsole. Experimental and may crash. Use at own risk",
         default=False,
         update=update_assume_print
     )
@@ -287,6 +292,7 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
         bpy.types.CONSOLE_HT_header.append(cls.draw_redirect)
         bpy.types.TEXT_MT_context_menu.append(cls.draw_button)
 
+
     @classmethod
     def _remove(cls):
         for km, kmi in cls._keymaps:
@@ -331,6 +337,8 @@ class TEXT_OT_run_in_console(bpy.types.Operator):
         spaces = get_console_spaces(context)
 
         if spaces:
+            # keep a context dictionary on module level so we don't
+            # have topass it everywhere or generate new each time
             c_dict.update(**context.copy())
             set_spaces(spaces)
             _console.runtextblock(context.space_data.text)
@@ -399,7 +407,7 @@ class CONSOLE_OT_redirect(bpy.types.Operator):
 
 
 def list_consoles(context):
-    return [a for w in context.window_manager.windows
+    return [a for w in bpy.context.window_manager.windows
             for a in w.screen.areas if a.type == 'CONSOLE']
 
 
