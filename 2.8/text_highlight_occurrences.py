@@ -65,6 +65,7 @@ def get_matches(substr, size, find):
 
 def get_colors(draw_type):
     colors = {
+        'SCROLL': (p.scroll_col,),
         'SOLID': (p.bg_col,),
         'LINE': (p.line_col,),
         'FRAME': (p.line_col,),
@@ -76,7 +77,6 @@ def get_colors(draw_type):
 def draw_batches(context, batches, colors):
     glLineWidth(p.line_thickness)
     shader_bind()
-
     glEnable(GL_BLEND)
     for draw, col in zip(batches, colors):
         shader_uniform_float("color", [*col])
@@ -85,7 +85,7 @@ def draw_batches(context, batches, colors):
 
 
 def update_colors(self, context):
-    col_attrs = ("bg_col", "fg_col", "line_col")
+    col_attrs = ("bg_col", "fg_col", "line_col", 'scroll_col')
     if self.col_preset != 'CUSTOM':
         for source, target in zip(self.colors[self.col_preset], col_attrs):
             setattr(self, target, source)
@@ -235,7 +235,7 @@ def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
     sx_2 = int(region.width - 0.2 * wu)
     sx_1 = sx_2 - top_margin + 2
     pxavail = region.height - top_margin * 2
-    wrh = wrhorg = (pxspan // lineh) + 1  # wrap height in lines
+    wrh = wrhorg = (pxspan // lineh) + 1  # wrap lines
     # wrh = pxspan // lineh + 1  # wrap height in lines
     # endl_idx = indexof(lines, txt.select_end_line, lenl, top)
     # current line position with wrap offset
@@ -243,7 +243,7 @@ def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
     # sellwofs = abs(maxy - loc(endl_idx, 0)[1]) / lineh
     # scrollmax = abs(maxy - maxy) / lineh
     # scrollmin = abs(maxy - miny) / lineh
-    scrolltop = region.height - top_margin
+    scrolltop = region.height - (top_margin + 2)
 
     vispan = st.top + st.visible_lines
     blank_lines = st.visible_lines // 2
@@ -262,15 +262,12 @@ def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
     #     bar1 = int((pxmrg * stp) / wrh)
     # else:
     #     bar1 = barh = 0
-
     j = 2 + wrhorg / len(st.text.lines) * pxavail
-    substr_s = substr.lower()
     for i, line in enumerate(st.text.lines, 1):
-        if substr_s in line.body.lower():
-            y = scrolltop - 2 - (i * j) // wrh
-            append((
-                Vector((sx_1, y)),
-                Vector((sx_2, y))))
+        bod = line.body.lower() if not p.case else line.body
+        if substr in bod:
+            y = scrolltop - i * j // wrh
+            append((Vector((sx_1, y)), Vector((sx_2, y))))
 
     # barspan = bar1 + barh
     # lhl1, lhl2 = sorted((curlwofs, sellwofs))
@@ -496,7 +493,7 @@ def draw_highlights(context):
         scroll_tris = to_scroll(lh, scrollpts, 2)
         scroll_batch = [batch_for_shader(
             shader, 'TRIS', {'pos': scroll_tris}).draw]
-        draw_batches(context, scroll_batch, get_colors(draw_type))
+        draw_batches(context, scroll_batch, get_colors('SCROLL'))
 
         batches = [batch_for_shader(
                    shader, btyp, {'pos': fn(lh, pts, y_ofs)}).draw
@@ -525,7 +522,29 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
         IntProperty,
         FloatProperty)
 
-    line_thickness: IntProperty(default=1, name="Line Thickness", min=1, max=4)
+    colors = {
+        "BLUE": (
+            (.25, .33, .45, 1),
+            (1, 1, 1, 1),
+            (.18, .44, .61, 1),
+            (0.14, .6, 1, .55)),
+        "YELLOW": (
+            (.39, .38, .07, 1),
+            (1, 1, 1, 1),
+            (.46, .46, 0, 1),
+            (1, .79, .09, .4)),
+        "GREEN": (
+            (.24, .39, .26, 1),
+            (1, 1, 1, 1),
+            (.2, .5, .19, 1),
+            (.04, 1., .008, .4)),
+        "RED": (
+            (.58, .21, .21, 1),
+            (1, 1, 1, 1),
+            (.64, .27, .27, 1),
+            (1, 0.21, .21, 0.5))}
+
+    line_thickness: IntProperty(default=2, name="Line Thickness", min=1, max=4)
     show_in_scroll: BoolProperty(
         name="Show in Scrollbar", default=True,
         description="Show highlights in scrollbar")
@@ -539,20 +558,20 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
         name='Case Sensitive',)
 
     bg_col: FloatVectorProperty(
-        description='Background color', default=(.25, .33, .45, 1),
-        name='Background', subtype='COLOR_GAMMA', size=4, min=0, max=1)
+        description='Background color', default=colors['BLUE'][0],
+        name='Background', subtype='COLOR', size=4, min=0, max=1)
 
     line_col: FloatVectorProperty(
-        description='Line and frame color', subtype='COLOR_GAMMA', size=4,
-        default=(.14, .33, .39, 1), name='Line / Frame', min=0, max=1)
+        description='Line and frame color', subtype='COLOR', size=4,
+        default=colors['BLUE'][2], name='Line / Frame', min=0, max=1)
 
     fg_col: FloatVectorProperty(
         description='Foreground color', name='Foreground', size=4, min=0,
-        default=(1, 1, 1, 1), subtype='COLOR_GAMMA', max=1)
+        default=colors['BLUE'][1], subtype='COLOR', max=1)
 
-    scroll_alpha: FloatProperty(
-        description="Opacity for scrollbar highlights"
-    )
+    scroll_col: FloatVectorProperty(
+        description="Opacity for scrollbar highlights", name="Scrollbar",
+        size=4, min=0, max=1, default=colors['BLUE'][3], subtype='COLOR')
 
     draw_type: EnumProperty(
         description="Draw type for highlights",
@@ -573,12 +592,6 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
             ("GREEN", "Green", "", 3),
             ("RED", "Red", "", 4),
             ("CUSTOM", "Custom", "", 5)))
-
-    colors = {
-        "BLUE": ((.25, .33, .45, 1), (1, 1, 1, 1), (.14, .33, .39, 1)),
-        "YELLOW": ((.39, .38, .07, 1), (1, 1, 1, 1), (.46, .46, 0, 1)),
-        "GREEN": ((.24, .39, .26, 1), (1, 1, 1, 1), (.2, .5, .19, 1)),
-        "RED": ((.58, .21, .21, 1), (1, 1, 1, 1), (.64, .27, .27, 1))}
 
     def draw(self, context):
         lines_only = self.draw_type in {'LINE', 'FRAME', 'SOLID_FRAME'}
@@ -608,10 +621,13 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
             col.prop(self, "fg_col")
             col = split.column()
             col.prop(self, "line_col")
+            col = split.column()
+            col.prop(self, "scroll_col")
 
 
 def register():
     bpy.utils.register_class(HighlightOccurrencesPrefs)
+    
     import sys
     prefs = bpy.context.preferences.addons[__name__].preferences
     sys.modules[__name__].p = prefs
@@ -623,7 +639,13 @@ def register():
             bpy.types.SpaceTextEditor.draw_handler_add(
                 draw_highlights,
                 (getattr(bpy, "context"),),
-                'WINDOW', 'POST_PIXEL')) or redraw(getattr(bpy, "context")))
+                'WINDOW', 'POST_PIXEL')) or
+            redraw(getattr(bpy, "context"))# or
+
+            # XXX for live reloading
+            # bpy.ops.preferences.addon_show(
+            #     module="text_highlight_occurrences")
+    )
 
 
 def unregister():
