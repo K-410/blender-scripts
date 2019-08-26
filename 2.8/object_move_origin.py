@@ -1,3 +1,5 @@
+# no longer worked on as native support to moving has been added in blender
+
 import bpy
 import mathutils
 import blf
