@@ -627,24 +627,19 @@ class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
 
 def register():
     bpy.utils.register_class(HighlightOccurrencesPrefs)
-    
+
     import sys
     prefs = bpy.context.preferences.addons[__name__].preferences
     sys.modules[__name__].p = prefs
-
     bpy.app.timers.register(
         lambda: setattr(
             HighlightOccurrencesPrefs,
             "handler",
             bpy.types.SpaceTextEditor.draw_handler_add(
                 draw_highlights,
-                (getattr(bpy, "context"),),
+                (bpy.context,),
                 'WINDOW', 'POST_PIXEL')) or
-            redraw(getattr(bpy, "context"))# or
-
-            # XXX for live reloading
-            # bpy.ops.preferences.addon_show(
-            #     module="text_highlight_occurrences")
+            redraw(bpy.context)
     )
 
 
