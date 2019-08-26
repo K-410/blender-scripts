@@ -2,46 +2,13 @@ import bpy
 
 bl_info = {
     "name": "Toggle Comment",
-    "description": "Toggle Comment",
+    "description": "Add comment toggling in Text Editor on CTRL D",
     "author": "kaio",
     "version": (1, 0, 0),
-    "blender": (2, 80, 0),
+    "blender": (2, 81, 0),
     "location": "Text Editor",
     "category": "Misc"
 }
-
-
-# restore text selection
-def set_select(self, lin_a, col_a, lin_b, col_b):
-    txt, index = self.txt, self.index
-    prev, next = 'PREVIOUS_CHARACTER', 'NEXT_CHARACTER'
-    up, dn = 'PREVIOUS_LINE', 'NEXT_LINE'
-    bpy_ops_text = bpy.ops.text
-
-    while txt.current_line_index != lin_a:
-        cur = txt.current_line_index
-        bpy_ops_text.move(False, type=up if cur > lin_a else dn)
-
-    last = next_last = None
-    while txt.current_character != col_a:
-        cur = txt.current_character
-        # workaround for tab being treated as single character
-        if cur == next_last:
-            break
-        bpy_ops_text.move(False, type=prev if cur > col_a else next)
-        next_last, last = last, cur
-
-    while index(txt.select_end_line) != lin_b:
-        end = index(txt.select_end_line)
-        bpy_ops_text.move_select(False, type=up if end > lin_b else dn)
-
-    last = next_last = None
-    while txt.select_end_character != col_b:
-        end = txt.select_end_character
-        if end == next_last:
-            break
-        bpy_ops_text.move_select(False, type=prev if end > col_b else next)
-        next_last, last = last, end
 
 
 class TEXT_OT_toggle_comment(bpy.types.Operator):
@@ -51,13 +18,10 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return (context.area.type == 'TEXT_EDITOR' and context.space_data.text)
+        return getattr(context.space_data, "text", False)
 
     def execute(self, context):
-
-        # push two undos because blender sucks
-        bpy.ops.ed.undo_push(message=self.bl_idname)
-
+        bpy_ops_text = bpy.ops.text
         txt = context.space_data.text
         all_lines = txt.lines[:]
         index = all_lines.index
@@ -69,29 +33,59 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
         col_b = txt.select_end_character
 
         start, end = sorted((lin_a, lin_b))
-        sel_lines = all_lines[start:end + 1]
-        self.txt, self.index = txt, index
+        sel = all_lines[start:end + 1]
+        self.txt = txt
 
         # select line if only one, otherwise commenting will fail
-        if len(sel_lines) == 1:
-            bpy.ops.text.select_line(False)
+        if len(sel) == 1:
+            bpy_ops_text.select_line()
 
         # favor commenting if mixed lines
-        non_empty = (l for l in sel_lines if l.body.strip())
+        non_empty = [l for l in sel if l.body.strip()]
         if all(l.body.startswith("#") for l in non_empty):
 
-            bpy.ops.text.uncomment()
+            type = 'UNCOMMENT'
             comment = False
         else:
-            bpy.ops.text.comment()
+            type = 'COMMENT'
             comment = True
 
+        bpy_ops_text.comment_toggle(type=type)
         # nudge selection range due to comment
         col_a += 1 if col_a and comment else -1 if col_a else 0
         col_b += 1 if col_b and comment else -1 if col_b else 0
 
-        # ensure caret doesn't jump
-        set_select(self, lin_a, col_a, lin_b, col_b)
+        # ensure caret doesn't jump, restore selection
+        prev = 'PREVIOUS_CHARACTER'
+        next = 'NEXT_CHARACTER'
+        up = 'PREVIOUS_LINE'
+        dn = 'NEXT_LINE'
+
+        while txt.current_line_index != lin_a:
+            cur = txt.current_line_index
+            bpy_ops_text.move(type=cur > lin_a and up or dn)
+
+        last = next_last = None
+        while txt.current_character != col_a:
+            cur = txt.current_character
+            # workaround for tab being treated as single character
+            if cur == next_last:
+                break
+            bpy_ops_text.move(type=cur > col_a and prev or next)
+            next_last, last = last, cur
+
+        while index(txt.select_end_line) != lin_b:
+            end = index(txt.select_end_line)
+            bpy_ops_text.move_select(type=end > lin_b and up or dn)
+
+        last = next_last = None
+        while txt.select_end_character != col_b:
+            end = txt.select_end_character
+            if end == next_last:
+                break
+            bpy_ops_text.move_select(type=end > col_b and prev or next)
+            next_last, last = last, end
+
         return {'FINISHED'}
 
     @classmethod
