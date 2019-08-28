@@ -69,31 +69,43 @@ def set_spaces(spaces):
         c_dict[k] = v
 
 
-def scrollback_append(result, c_dict=c_dict, type='INFO'):
+def delayed_scrollback(items, c_dict=c_dict, type='INFO'):
+    items = [*reversed(items)]
+    bpy.app.timers.register(
+        lambda: scrollback_append(
+            items, c_dict=c_dict, type=type),
+        first_interval=0.5)
+
+
+def scrollback_append(items, c_dict=c_dict, type='INFO'):
     """Append text to the console using bpy.ops.scrollback_append"""
     spaces = get_console_spaces(c_dict)
     if not spaces:  # default to builtin print if no console area exists
-        return _print(*result)
+        return _print(*items)
 
     set_spaces(spaces)
     scrollback = bpy.ops.console.scrollback_append
-    if result.endswith("\n"):
-        result = result[:-1]
-    for l in result.split("\n"):
-        text = l.replace("\t", "    ")
+    if items.endswith("\n"):
+        items = items[:-1]
 
+    text = ""
+    items = [*reversed([l.replace("\t", "    ") for l in items.split("\n")])]
+    while items:
+        if isinstance(bpy.context, _RestrictContext):
+            break
         try:
-            # TODO defer scrollbacks until context is free
-            if isinstance(bpy.context, _RestrictContext):
-                continue
-                # raise Exception("RESTRICT")
+            text = items.pop()
             scrollback(c_dict, text=text, type=type)
+            ok = True
 
         except RuntimeError:
-            bpy.app.timers.register(
-                lambda: scrollback_append(
-                    result, c_dict=c_dict, type='INFO'),
-                first_interval=0.5)
+            ok = False
+            break
+
+    if not ok:
+        if text:
+            items.append(text)
+        return delayed_scrollback(items, c_dict, type)
 
 
 def printc(*args, **kwargs):
@@ -461,22 +473,13 @@ def delkey(path, key):
     del path[key]
 
 
-def set_builtin_print(remove=False):
-    from sys import modules
-    b = get_builtins().__dict__
-
-    if remove:
-        org = b.get('_print', 0)
-        if org:
-            b['print'] = org
-            del b['_print']
-        return
-
-    modules[__name__]._print = b['_print'] = b['print']
+def get_builtin_print():
+    global _print
+    _print = get_builtins().print
 
 
 def register():
-    set_builtin_print()
+    # set_builtin_print()
     for cls in classes():
         bpy.utils.register_class(cls)
         if hasattr(cls, '_setup'):
@@ -496,7 +499,9 @@ def register():
 
 def unregister():
     # restore print
-    set_builtin_print(False)
+    import sys
+    sys.modules['builtins'].print = _print
+    # set_builtin_print(False)
 
     for cls in reversed(classes()):
         if hasattr(cls, '_remove'):
@@ -512,3 +517,7 @@ def unregister():
     # clean up custom properties
     for w in bpy.context.window_manager.windows:
         w.screen.pop('console_redirect', None)
+
+
+# store on read
+get_builtin_print()
