@@ -20,73 +20,61 @@ class TEXT_OT_toggle_comment(bpy.types.Operator):
     def poll(cls, context):
         return getattr(context.space_data, "text", False)
 
+    def index(self, txt, line):
+        for idx, lin in enumerate(txt.lines):
+            if line == lin:
+                return idx
+
+    def select(self, txt, l1, l2, c1, c2):
+
+        move = bpy.ops.text.move
+        select = bpy.ops.text.move_select
+
+        left = 'PREVIOUS_CHARACTER'
+        right = 'NEXT_CHARACTER'
+        up = 'PREVIOUS_LINE'
+        down = 'NEXT_LINE'
+
+        indentation = txt.indentation
+        txt.indentation = 'TABS'
+        index = self.index
+
+        while txt.current_line_index != l1:
+            move(type=up if txt.current_line_index > l1 else down)
+
+        while txt.current_character != c1:
+            move(type=left if txt.current_character > c1 else right)
+
+        while index(txt, txt.select_end_line) != l2:
+            select(type=up if index(txt, txt.select_end_line) > l2 else down)
+
+        while txt.select_end_character != c2:
+            select(type=left if txt.select_end_character > c2 else right)
+
+        txt.indentation = indentation
+        return {'FINISHED'}
+
     def execute(self, context):
-        bpy_ops_text = bpy.ops.text
         txt = context.space_data.text
-        all_lines = txt.lines[:]
-        index = all_lines.index
-
-        # selection range as indices
-        lin_a = txt.current_line_index
-        lin_b = index(txt.select_end_line)
-        col_a = txt.current_character
-        col_b = txt.select_end_character
-
-        start, end = sorted((lin_a, lin_b))
-        sel = all_lines[start:end + 1]
-        self.txt = txt
+        l1, l2 = txt.current_line_index, self.index(txt, txt.select_end_line)
+        start, end = sorted((l1, l2))
+        c1 = txt.current_character
+        c2 = txt.select_end_character
+        sel = txt.lines[start: end + 1]
 
         # select line if only one, otherwise commenting will fail
         if len(sel) == 1:
-            bpy_ops_text.select_line()
+            bpy.ops.text.select_line()
 
         # favor commenting if mixed lines
         non_empty = [l for l in sel if l.body.strip()]
-        if all(l.body.startswith("#") for l in non_empty):
-
-            type = 'UNCOMMENT'
-            comment = False
-        else:
-            type = 'COMMENT'
-            comment = True
-
-        bpy_ops_text.comment_toggle(type=type)
+        com = not all(l.body.startswith("#") for l in non_empty)
+        bpy.ops.text.comment_toggle(type="COMMENT" if com else "UNCOMMENT")
         # nudge selection range due to comment
-        col_a += 1 if col_a and comment else -1 if col_a else 0
-        col_b += 1 if col_b and comment else -1 if col_b else 0
+        c1 += 1 if c1 and com else -1 if c1 else 0
+        c2 += 1 if c2 and com else -1 if c2 else 0
 
-        # ensure caret doesn't jump, restore selection
-        prev = 'PREVIOUS_CHARACTER'
-        next = 'NEXT_CHARACTER'
-        up = 'PREVIOUS_LINE'
-        dn = 'NEXT_LINE'
-
-        while txt.current_line_index != lin_a:
-            cur = txt.current_line_index
-            bpy_ops_text.move(type=cur > lin_a and up or dn)
-
-        last = next_last = None
-        while txt.current_character != col_a:
-            cur = txt.current_character
-            # workaround for tab being treated as single character
-            if cur == next_last:
-                break
-            bpy_ops_text.move(type=cur > col_a and prev or next)
-            next_last, last = last, cur
-
-        while index(txt.select_end_line) != lin_b:
-            end = index(txt.select_end_line)
-            bpy_ops_text.move_select(type=end > lin_b and up or dn)
-
-        last = next_last = None
-        while txt.select_end_character != col_b:
-            end = txt.select_end_character
-            if end == next_last:
-                break
-            bpy_ops_text.move_select(type=end > col_b and prev or next)
-            next_last, last = last, end
-
-        return {'FINISHED'}
+        return self.select(txt, l1, l2, c1, c2)
 
     @classmethod
     def _setup(cls):
