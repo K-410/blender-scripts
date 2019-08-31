@@ -4,7 +4,7 @@ from mathutils import Vector
 from gpu_extras.batch import batch_for_shader
 from itertools import chain
 from collections import deque
-from time import perf_counter
+# from time import perf_counter
 from bgl import glLineWidth, glEnable, glDisable, GL_BLEND
 from blf import (
     # dimensions as blf_dimensions,
@@ -141,6 +141,12 @@ def get_y_offset(rh, lineh, fs, yco):
     return lineh / fs
 
 
+def get_cw(loc, firstx, lines):
+    for idx, line in enumerate(lines):
+        if len(line.body) > 1:
+            return loc(idx, 1)[0] - firstx
+
+
 def get_non_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     scrollpts = []
     scr_append = scrollpts.append
@@ -155,8 +161,7 @@ def get_non_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     loc = st.region_location_from_cursor
     firstxy = loc(0, 0)
     maxy = firstxy[1]
-    cw = loc(0, 1)[0] - firstxy[0]
-    # cw = round(blf_dimensions(1, " ")[0])
+    cw = get_cw(loc, firstxy[0], lines)
     cspan = cw * size
     yco = range(loc(top, 0)[1], -lineh, -lineh)
     y_offset = get_y_offset(region.height, lineh, st.font_size, yco)
@@ -325,7 +330,7 @@ def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
 
     firstxy = loc(0, 0)
     maxy = firstxy[1]
-    cw = loc(0, 1)[0] - firstxy[0]
+    cw = get_cw(loc, firstxy[0], lines)
     rh, rw = region.height, region.width
     # rlimit = ry + rh
     fs = st.font_size
@@ -342,7 +347,6 @@ def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
     stp = st.top
     top, pxspan, miny = calc_top(stp, maxy, lenl, loc, lines, lineh, rh)
     size = len(substr)
-    # calc_scroll = perf_counter()
 
     vis = st.visible_lines
     yco = range(loc(top, 0)[1], -100000, -lineh)
@@ -462,8 +466,6 @@ def get_widget_unit(context):
 
 
 def draw_highlights(context):
-    # print("\n" * 40)
-    # t = perf_counter()
     st = context.space_data
     txt = st.text
     if not txt:
@@ -488,8 +490,6 @@ def draw_highlights(context):
         else:
             pts, scrollpts, y_ofs = get_non_wrapped_pts(*args)
 
-        # tpredraw = perf_counter()
-
         scroll_tris = to_scroll(lh, scrollpts, 2)
         scroll_batch = [batch_for_shader(
             shader, 'TRIS', {'pos': scroll_tris}).draw]
@@ -499,6 +499,7 @@ def draw_highlights(context):
                    shader, btyp, {'pos': fn(lh, pts, y_ofs)}).draw
                    for b in batch_types[draw_type] for (btyp, fn) in [b]]
         draw_batches(context, batches + scroll_batch, get_colors(draw_type))
+
         # highlight font overlay starts here
         fontid = 1
         blf_color(fontid, *p.fg_col)
@@ -506,11 +507,6 @@ def draw_highlights(context):
             co.y += xoffset
             blf_position(fontid, *co, 1)
             blf_draw(fontid, substring)
-        # tend = perf_counter()
-    #     print(" Pre-Scan:", round((tprescan - t) * 1000, 2), "ms")
-    #     print(" Scan:", round((tpredraw - tprescan) * 1000, 2), "ms")
-    #     print(" Draw:", round((tend - tpredraw) * 1000, 2), "ms")
-    # print("Total Time:", round((perf_counter() - t) * 1000, 2), "ms")
 
 
 def update_highlight(self, context):
