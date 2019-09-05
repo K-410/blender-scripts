@@ -70,7 +70,7 @@ def set_spaces(spaces):
 
 
 def delayed_scrollback(items, c_dict=c_dict, type='INFO'):
-    items = [*reversed(items)]
+    items = "".join(items)
     bpy.app.timers.register(
         lambda: scrollback_append(
             items, c_dict=c_dict, type=type),
@@ -78,6 +78,7 @@ def delayed_scrollback(items, c_dict=c_dict, type='INFO'):
 
 
 def scrollback_append(items, c_dict=c_dict, type='INFO'):
+    # return
     """Append text to the console using bpy.ops.scrollback_append"""
     spaces = get_console_spaces(c_dict)
     if not spaces:  # default to builtin print if no console area exists
@@ -85,9 +86,11 @@ def scrollback_append(items, c_dict=c_dict, type='INFO'):
 
     set_spaces(spaces)
     scrollback = bpy.ops.console.scrollback_append
-    if items.endswith("\n"):
-        items = items[:-1]
-
+    if isinstance(items, str):
+        if items[-1].endswith("\n"):
+            items = items[:-1]
+    elif isinstance(items, list):
+        items = "\n".join(items)
     text = ""
     items = [*reversed([l.replace("\t", "    ") for l in items.split("\n")])]
     while items:
@@ -97,15 +100,14 @@ def scrollback_append(items, c_dict=c_dict, type='INFO'):
             text = items.pop()
             scrollback(c_dict, text=text, type=type)
             ok = True
-
         except RuntimeError:
             ok = False
             break
 
     if not ok:
         if text:
-            items.append(text)
-        return delayed_scrollback(items, c_dict, type)
+            items.insert(0, text)
+        return delayed_scrollback("\n".join(items), c_dict, type)
 
 
 def printc(*args, **kwargs):
