@@ -752,6 +752,7 @@ def draw_callback_px(context):
     # draw whitespace symbols
     if show_ws:
         wsc = "·"
+        wsbod = ["".join(wsc if c in " " else " " for c in l.body) for l in lines[sttop:sttop + visl]]
         blf_color(1, *color, 1 * ce.ws_alpha)
         xoffset = wunits // 2
         xoffset += (st.show_line_numbers and cw * len(repr(lenl))) or 0
@@ -760,11 +761,12 @@ def draw_callback_px(context):
         # truncate string beyond visible range
         avail_chr = (lbound - xoffset) // cw
 
-        for idx, l in enumerate(text.lines[sttop:sttop + visl]):
-            wsstr = "".join(wsc if c in " " else " " for c in l.body)
-            if wsstr:
-                blf_position(1, xoffset, start_y, 0)
-                blf_draw(1, wsstr[:avail_chr])
+        # offset and truncate start when text is scrolled to the right
+        avail_left = abs((xstart // cw) - ldig - 1)
+
+        for idx, line in enumerate(wsbod):
+            blf_position(1, xstart + (avail_left * cw), start_y, 0)
+            blf_draw(1, line[avail_left:avail_chr])
             start_y -= lh
 
     # restore opengl defaults
