@@ -19,13 +19,12 @@
 import bpy
 import bgl
 import blf
-import time
-import string
-import threading
+from time import perf_counter
 from gpu.shader import from_builtin
 from gpu_extras.batch import batch_for_shader
-from mathutils import Vector
-
+from bpy.types import Operator
+from collections import defaultdict, deque
+from itertools import repeat
 bl_info = {
     "name": "Code Editor",
     "location": "Text Editor > Righ Click Menu",
@@ -43,9 +42,160 @@ sh_2d = from_builtin('2D_UNIFORM_COLOR')
 sh_2d_uniform_float = sh_2d.uniform_float
 sh_2d_bind = sh_2d.bind
 
+bgl_glLineWidth = bgl.glLineWidth
+bgl_glDisable = bgl.glDisable
+bgl_glEnable = bgl.glEnable
+bgl_GL_BLEND = bgl.GL_BLEND
+
+blf_position = blf.position
+blf_color = blf.color
+blf_rotation = blf.rotation
+blf_ROTATION = blf.ROTATION
+blf_disable = blf.disable
+blf_enable = blf.enable
+blf_draw = blf.draw
+blf_size = blf.size
+
+
+# emulate a list of integers with slicing capability
+# use with tracking indents
+class DefaultInt(defaultdict):
+    def __init__(self):
+        sclass = super(__class__, self)
+        sclass.__init__()
+        self._setitem = sclass.__setitem__
+        self._delitem = sclass.__delitem__
+        self._get = sclass.__getitem__
+
+    def _parse_slice(self, obj):
+        start = obj.start or 0
+        stop = obj.stop or len(self) or start + 1
+        step = obj.step or 1
+        return range(start, stop, step)
+
+    def __delitem__(self, i):
+        if isinstance(i, slice):
+            for i in self._parse_slice(i):
+                del self[i]
+        elif i in self:
+            self._delitem(i)
+
+    def __missing__(self, i):
+        self._setitem(i, -1)
+        return self[i]
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self._get(j) for j in self._parse_slice(i)]
+        return self._get(i)
+
+
+class TextCache(defaultdict):
+    def __init__(self):
+        super(__class__, self).__init__()
+        self.__dict__ = self
+
+    # generate a blank cache
+    def __missing__(self, key):
+        assert key in bpy.data.texts
+        self.purge_unused()
+        text = bpy.data.texts[key]
+        hashes = defaultdict(lambda: None)
+
+        def defaultlist():
+            return [[] for _ in repeat(None, len(text.lines))]
+        data = defaultdict(defaultlist)
+        indents = DefaultInt()
+        cache = self[key] = (hashes,   # body hashes
+                             data,     # syntax data
+                             [],       # ????
+                             indents)  # indents data
+        return cache
+
+    def purge_unused(self):
+        texts = bpy.data.texts
+        found = key = None
+        while texts:
+            if found:
+                del self[key]
+                found = False
+            for key in self:
+                if key not in texts:
+                    found = True
+                    break
+            if not found:
+                break
+
+
+# maintain caches and give out handles for editors
+class CodeEditorManager(dict):
+    editors = []
+    tcache = TextCache()
+
+    def __init__(self):
+        super(__class__, self).__init__()
+        self.__dict__ = self
+
+    def get_cached(self, text):
+        cache = self.tcache[text.name]
+        lenl = len(text.lines)
+        lenp = len(cache[1][0])
+        # if the original text is longer, increase cache size
+        if lenl > lenp:
+            for slot in cache[1].values():
+                slot.extend([[] for _ in repeat(None, (lenl - lenp))])
+        # or nuke the slots
+        elif lenp > lenl:
+            del cache[3][lenl:]
+            for data in cache[1].values():
+                del data[lenl + 1:]
+            pop = cache[0].pop
+            for i in range(lenl, lenp):
+                pop(i, None)
+        # cached text is a defaultdict, meaning a cache is
+        # automatically created instead of raising KeyError
+        return cache
+
+    # remove unused instances (closed editors)
+    def gc(self, context):
+        pset = set()
+        add = pset.add
+        for w in context.window_manager.windows:
+            for a in w.screen.areas:
+                if a.type == 'TEXT_EDITOR':
+                    add(f"ce_{a.as_pointer()}")
+        found = i = None
+        while found is not False:
+            if found:
+                found = False
+                del self[i]
+            for i in self:
+                if i not in pset:
+                    found = True
+                    break
+            if not found:
+                break
+
+    def _new(self, hid, context):
+        # clean up when a new space is added
+        self.gc(context)
+        self[hid] = CodeEditorMain(context)
+        self.editors.append(self[hid])
+        return self[hid]
+
+    def get_handle(self, context):
+        hid = f"ce_{context.area.as_pointer()}"
+        handle = self.get(hid)
+        if not handle:
+            return self._new(hid, context)
+        return handle
+
+
+ce_manager = CodeEditorManager()
+get_handle = ce_manager.get_handle
+
 
 def draw_lines_2d(seq, color):
-
     batch = batch_for_shader(sh_2d, 'LINES', {'pos': seq})
     sh_2d_bind()
     sh_2d_uniform_float("color", [*color])
@@ -60,808 +210,782 @@ def draw_quads_2d(seq, color):
     batch.draw(sh_2d)
 
 
-def custom_home(line, cursor_loc):
-    """Returns position of first character in line"""
-    for id, ch in enumerate(line):
-        if ch != ' ' or id >= cursor_loc-1:
-            return id
-    return 0
+def get_xoffs(text, st):
+    loc = st.region_location_from_cursor
+    for idx, line in enumerate(text.lines):
+        if len(line.body) > 1:
+            xstart = loc(idx, 0)[0]
+            return loc(idx, 1)[0] - xstart, xstart
+    return 0, 0
 
 
-def smart_complete(input_string):
-    """
-    Based on input:
-     - Evaluates numeric expression
-     - Puts quotes("") around
-     - Makes a list from selection
-    """
-    def handle_letters(input_text):
-        if all([ch in string.ascii_letters + string.digits + '_' for ch in input_text]):
-            return '"' + input_string + '"'
-        if any([ch in '!#$%&\()*+,-/:;<=>?@[\\]^`{|}~' for ch in input_text]):
-            return input_text
-        else:
-            input_text.split(" ")
-            return '[' + ', '.join([ch for ch in input_text.split(" ") if ch!='']) + ']'
-
-    # try numbers
-    if not input_string:
-        return ""
-    elif not any([ch in string.digits for ch in input_string]):
-        return handle_letters(input_string)
-    else:
-        try:
-            e = 2.71828     # euler number
-            phi = 1.61803   # golden ratio
-            pi = 3.141592   # really?
-            g = 9.80665     # gravitation accel
-            answer = eval(input_string)
-            return str(round(answer, 5))
-        except:
-            return handle_letters(input_string)
+# source/blender/windowmanager/intern/wm_window.c$515
+def get_widget_unit(context):
+    system = context.preferences.system
+    p = system.pixel_size
+    pd = p * system.dpi
+    return int((pd * 20 + 36) / 72 + (2 * (p - pd // 72)))
 
 
-# =====================================================
-#                     MINIMAP SYNTAX
-# =====================================================
+class MinimapEngine:
 
+    def _texts(self):
+        return self._data.texts
 
-class ThreadedSyntaxHighlighter(threading.Thread):
-    """Breaks text into segments based on syntax for highlighting"""
-
-    def __init__(self, text, output_list):
-        threading.Thread.__init__(self)
-        self.daemon = True
+    def __init__(self, ce, output_list):
         self.output = output_list
-        self.text = text
-        self._restart = threading.Event()
-        self._paused = threading.Event()
-        self._state = threading.Condition()
+        self.ce = ce
+        self.data = bpy.data
+        self.special = ('def ', 'class ')
+        self.numerics = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'}
+        self.numericsdot = {*self.numerics, '.'}
+        self.builtin = {'return', 'break', 'continue', 'yield', 'with', 'is '
+                        'while', 'for ', 'import ', 'from ', 'not ', 'elif ',
+                        ' else', 'None', 'True', 'False', 'and ', 'in ', 'if '}
+        self.ws = {'\x0b', '\r', '\x0c', '\t', '\n', ' '}
+        self.some_set = {'TAB', 'STRING', 'BUILTIN', 'SPECIAL'}
+        self.some_set2 = {'COMMENT', 'PREPRO', 'STRING', 'NUMBER'}
+        self._data = bpy.data
+        self.enumbuilt = [*enumerate(self.builtin)]
+        self.enumspec = [*enumerate(self.special)]
 
-    def restart(self, text):
-        with self._state:
-            self.text = text
-            self._restart.set()
-            self._paused.clear()
-            self._state.notify()  # unblock self if in paused mode
+    def close_block(self, idx, indent, blankl, spec, dspecial):
+        remove = spec.remove
+        val = idx - blankl
+        for entry in spec:
+            if entry[0] < idx and entry[1] >= indent:
+                dspecial[entry[0]].append((entry[1], entry[2], val))
+                remove(entry)
 
-    def run(self):
-        while True:
-            with self._state:
-                if self._paused.is_set():
-                    self._state.wait()  # wait until notify() - the thread is paused
+    def highlight(self, tidx):
+        # abort if requested during undo/redo
+        texts = self._texts()
+        if not texts:
+            return
 
-            self._restart.clear()
-            # do stuff
-            self.highlight()
+        text = texts[tidx]
 
-    def highlight(self):
-        # approximate syntax higlighter, accuracy is traded for speed
+        t = perf_counter()
+        ce = self.ce
+        # draw only a portion of the text at a time
+        start, end = ce.maprange[0], ce.maprange[-1]
 
-        # start empty
-        n_lines = len(self.text.lines) if self.text else 0
-        data = {}
-        data['plain'] = [[] for i in range(n_lines)]
-        data['strings'] = [[] for i in range(n_lines)]
-        data['comments'] = [[] for i in range(n_lines)]
-        data['numbers'] = [[] for i in range(n_lines)]
-        data["special"] = [[] for i in range(n_lines)]
-        special_temp = []
-        data["builtin"] = [[] for i in range(n_lines)]
-        data["prepro"] = [[] for i in range(n_lines)]
-        data['tabs'] = [[] for i in range(n_lines)]
+        # make a proxy version of the text
+        c_hash, c_data, special_temp, c_indents = ce_manager.get_cached(text)
+        # print(len(c_hash), len(text.lines), len(special_temp), len(c_data[0]))
 
+        dspecial = c_data['special']   # special keywords (class, def)
+        dplain = c_data['plain']       # plain text
+        dnumbers = c_data['numbers']   # ints and floats
+        dstrings = c_data['strings']   # strings
+        dbuiltin = c_data['builtin']   # builtin
+        dcomments = c_data['comments'] # comments
+        dprepro = c_data['prepro']     # pre-processor (decorators)
+        dtabs = c_data['tabs']         # ?????
+        indents = c_indents            # indentation levels
+        # indents = c_data['indents']    # indentation levels
+
+        blankl = 0
         # syntax element structure
-        element = [0,   # line id
-                   0,   # element start position
-                   0,   # element end position
-                   0]   # special block end line
+        elem = [0,  # line id
+                0,  # element start position
+                0,  # element end position
+                0]  # special block end line
 
         # this is used a lot for ending plain text segment
-        def close_plain(element, w):
+        def close_plain(elem, cidx):
             """Ends non-highlighted text segment"""
-            if element[1] < w:
-                element[2] = w - 1
-                data['plain'][element[0]].append([element[1], element[2]])
-            element[1] = w
-            return
+            if elem[1] < cidx:
+                elem[2] = cidx - 1
+                dplain[elem[0]].append(elem[1:3])
+            elem[1] = cidx
 
-        # this ends collapsible code block
-        def close_block(h, indent):
-            for entry in list(special_temp):
-                if entry[0] < h and entry[1] >= indent:
-                    data['special'][entry[0]].append([entry[1], entry[2], h-empty_lines])
-                    special_temp.remove(entry)
-            return
-
+        # this ends collapsible code block <- not sure what this means
+        close_block = self.close_block
         # recognized tags definitions, only the most used
-        builtin = ['return', 'break', 'continue', 'yield', 'with', 'while', 'for ', 'import ', 'from ',
-                   'if ', 'elif ', ' else', 'None', 'True', 'False', 'and ', 'not ', 'in ', 'is ']
-        special = ['def ', 'class ']
-
+        numerics = self.numerics
+        numericsdot = self.numericsdot
+        some_set = self.some_set
+        some_set2 = self.some_set2
+        ws = self.ws
+        idx = 0
         # flags of syntax state machine
-        state = None
-        empty_lines = 0
+        state = ""
         timer = -1      # timer to skip characters and close segment at t=0
+        builtin_set = "rbcywfieNTFan"
+        enumbuilt = self.enumbuilt
+        enumspec = self.enumspec
+        special_temp.clear()
+        tab_width = ce.st.tab_width
 
-        # process the text if there is one
-        for h, line in enumerate(self.text.lines if self.text else []):
+        def look_back(idx):
+            prev = idx - 1
+            lines = text.lines
+            while prev > 0:
+                bod = lines[prev].body
+                blstrip = bod.lstrip()
+                lenbprev = len(bod)
+                indprev = (lenbprev - len(blstrip)) // tab_width
+                if indprev:
+                    bstartsw = blstrip.startswith
+                    if bstartsw("def"):
+                        indprev += 1
+                    elif bstartsw("return"):
+                        indprev -= 1
+                    return indprev
+                elif blstrip:
+                    return 0
+                prev -= 1
+            return 0
+
+        for idx, line in enumerate(text.lines[start:end], start):
+            hsh = hash(line.body)
+            if hsh == c_hash[idx]:
+                # use cached data instead
+                continue
+
+            c_hash[idx] = hsh
+
+            # TODO wrap into a function
+            for i in (dspecial, dplain, dnumbers, dstrings, dbuiltin, dcomments, dprepro):
+                i[idx].clear()
+
+            bod = line.body
+            lenbstrip = len(bod.lstrip())
+            lenb = len(bod)
+            ind = (lenb - lenbstrip) // tab_width
+
+            # track hanging indents by looking at previous
+            if not lenbstrip:
+                ind = look_back(idx)
+            indents[idx] = ind
 
             # new line new element, carry string flag
-            element[0] = h
-            element[1] = 0
-            if state not in ['Q_STRING', 'A_STRING']:
-                state = None
+            elem[0] = idx
+            elem[1] = 0
+            if state != 'STRING':
+                state = ""
+
             indent = 0
-            block_close = any([char not in string.whitespace for char in line.body])
-
+            block_close = has_non_ws = any(c not in ws for c in bod)
+            enumbod = [*enumerate(bod)]
             # process each line and break into syntax elements
-            for w, ch in enumerate(line.body):
-
-                # end if restarted
-                if self._restart.is_set():
-                    return
-
+            for cidx, c in enumbod:
+                bodsub = bod[cidx:]
+                start_tab = "    " in bodsub[:4]
                 if timer > 0:
                     timer -= 1
-
                 elif timer < 0:
-                    # tabs
-                    if not state and line.body.startswith('    ', w):
-                        close_plain(element, w)
-                        state = 'TAB'
-                        timer = 3
-                        indent += 4
-                    elif state in ['Q_STRING', 'A_STRING'] and line.body.startswith('    ', w):
-                        element[1] = w + 4
-                        indent += 4
-
-                    # bilt-in
-                    if not state and ch in "rbcywfieNTFan":
-                        results = [line.body.startswith(x, w) for x in builtin]
-                        if any(results):
-                            close_plain(element, w)
-                            state = 'BUILTIN'
-                            timer = len(builtin[results.index(True)]) - 1
-
-                    # special
-                    if not state and ch in "dc":
-                        results = [line.body.startswith(x, w) for x in special]
-                        if any(results):
-                            close_plain(element, w)
-                            state = 'SPECIAL'
-                            timer = len(special[results.index(True)]) - 1
-
-                    # numbers
-                    if not state and ch in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
-                        close_plain(element, w)
-                        state = 'NUMBER'
-                    elif state == 'NUMBER' and ch not in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '.']:
-                        element[2] = w
-                        data['numbers'][element[0]].append([element[1], element[2]])
-                        element[1] = w
-                        state = None
-
-                    # "" string
-                    if not state and ch == '"':
-                        close_plain(element, w)
-                        state = 'Q_STRING'
-                    elif state == 'Q_STRING' and ch == '"':
-                        if w > 1 and line.body[w-1] == '\\' and line.body[w-2] == '\\':
-                            timer = 0
-                        elif w > 0 and line.body[w-1] == '\\':
-                            pass
-                        else:
-                            timer = 0
-
-                    # '' string
-                    elif not state and ch == "'":
-                        close_plain(element, w)
-                        state = 'A_STRING'
-                    elif state == 'A_STRING' and ch == "'":
-                        if w > 1 and line.body[w-1] == '\\' and line.body[w-2] == '\\':
-                            timer = 0
-                        elif w > 0 and line.body[w-1] == '\\':
-                            pass
-                        else:
-                            timer = 0
-
-                    # comment
-                    elif not state and ch == '#':
-                        close_plain(element, w)
-                        state = 'COMMENT'
-                        # close code blocks
-                        if block_close:
-                            for i, j in enumerate(line.body):
-                                if i > 0 and j != " ":
-                                    close_block(h, 4*int(i/4))
-                        break
-
-                    # preprocessor
-                    elif not state and ch == '@':
-                        close_plain(element, w)
-                        state = 'PREPRO'
-                        # close code blocks
-                        if block_close:
-                            close_block(h, indent)
-                        break
-
+                    if not state:
+                        # tabs
+                        if start_tab:
+                            close_plain(elem, cidx)
+                            state = 'TAB'
+                            timer = 3
+                            indent += 4
+                        # built-in
+                        if not state and c in builtin_set:
+                            bodsub = bod[cidx:]
+                            for i, b in enumbuilt:
+                                if b in bodsub[:len(b)]:
+                                    close_plain(elem, cidx)
+                                    state = 'BUILTIN'
+                                    timer = len(b) - 1
+                                    break
+                        # special (def, class)
+                        if not state and c in "dc":
+                            bodsub = bod[cidx:]
+                            for i, b in enumspec:  # TODO remove i
+                                if b in bodsub[:len(b)]:
+                                    close_plain(elem, cidx)
+                                    state = 'SPECIAL'
+                                    timer = len(b) - 1
+                                    break
+                        # numbers
+                        elif c in numerics:
+                            close_plain(elem, cidx)
+                            state = 'NUMBER'
+                        # "" string
+                        elif c in '\"\'':
+                            close_plain(elem, cidx)
+                            state = 'STRING'
+                        # comment
+                        elif c == '#':
+                            close_plain(elem, cidx)
+                            state = 'COMMENT'
+                            # close code blocks
+                            if block_close:
+                                for i, j in enumbod:
+                                    if i > 0 and j != " ":
+                                        close_block(idx, i // 4 * 4, blankl, special_temp, dspecial)
+                            break
+                        # preprocessor
+                        elif c == '@':
+                            # print("is @", c)
+                            close_plain(elem, cidx)
+                            state = 'PREPRO'
+                            # close code blocks
+                            if block_close:
+                                # print("close block", timer)
+                                close_block(idx, indent, blankl, special_temp, dspecial)
+                            break
+                    elif state == 'NUMBER' and c not in numericsdot:
+                        elem[2] = cidx
+                        dnumbers[idx].append(elem[1:3])
+                        elem[1] = cidx
+                        state = ""
+                    elif state == 'STRING':
+                        if c in "\"\'":
+                            if '\\' not in bod[cidx - 1]:
+                                timer = 0
+                        if start_tab:
+                            elem[1] = cidx + 4
+                            indent += 4
                 # close special blocks
                 if state != 'TAB' and block_close:
                     block_close = False
-                    close_block(h, indent)
-
+                    close_block(idx, indent, blankl, special_temp, dspecial)
                 # write element when timer 0
                 if timer == 0:
-                    element[2] = w
-                    if state == 'TAB':
-                        data['tabs'][element[0]].append([element[1], element[2]])
-                        element[1] = w + 1
-                    elif state in ['Q_STRING', 'A_STRING']:
-                        data['strings'][element[0]].append([element[1], element[2]])
-                        element[1] = w + 1
-                    elif state == 'BUILTIN':
-                        data['builtin'][element[0]].append([element[1], element[2]])
-                        element[1] = w + 1
-                    elif state == 'SPECIAL':
-                        special_temp.append(element.copy())
-                        element[1] = w + 1
-                    state = None
+                    elem[2] = cidx
+                    if state in some_set:
+                        if state == 'TAB':
+                            dtabs[idx].append(elem[1:3])
+                        if state == 'STRING':
+                            dstrings[idx].append(elem[1:3])
+                        elif state == 'BUILTIN':
+                            dbuiltin[idx].append(elem[1:3])
+                        elif state == 'SPECIAL':
+                            special_temp.append(elem.copy())
+                            # special_temp.append(elem[:])
+                        elem[1] = cidx + 1
+                    state = ""
                     timer = -1
-
             # count empty lines
-            empty_lines = 0 if any([ch not in string.whitespace for ch in line.body]) else empty_lines + 1
+            blankl = 0 if has_non_ws else blankl + 1
 
             # handle line ends
             if not state:
-                element[2] = len(line.body)
-                data['plain'][element[0]].append([element[1], element[2]])
-            elif state == 'COMMENT':
-                element[2] = len(line.body)
-                data['comments'][element[0]].append([element[1], element[2]])
-            elif state == 'PREPRO':
-                element[2] = len(line.body)
-                data['prepro'][element[0]].append([element[1], element[2]])
-            elif state in ['Q_STRING', 'A_STRING']:
-                element[2] = len(line.body)
-                data['strings'][element[0]].append([element[1], element[2]])
-            elif state == 'NUMBER':
-                element[2] = len(line.body)
-                data['numbers'][element[0]].append([element[1], element[2]])
+                elem[2] = lenb
+                dplain[idx].append(elem[1:3])
+            elif state in some_set2:
+                elem[2] = lenb
+                elems = elem[1:3]
+                if state == 'COMMENT':
+                    dcomments[idx].append(elems)
+                elif state == 'PREPRO':
+                    dprepro[idx].append(elems)
+                elif state == 'STRING':
+                    dstrings[idx].append(elems)
+                elif state == 'NUMBER':
+                    # dnumbers[idx].append(elems)
+                    dnumbers[idx].append(elems)
 
+        # special_temp size keeps growing, fucking fix this
         # close all remaining blocks
+        val = idx + 1 - blankl
         for entry in special_temp:
-            data['special'][entry[0]].append([entry[1], entry[2], h+1-empty_lines])
+            dspecial[entry[0]].append([entry[1], entry[2], val])
 
         # done
-        self.output[0]['elements'] = data['plain']
-        self.output[1]['elements'] = data['strings']
-        self.output[2]['elements'] = data['comments']
-        self.output[3]['elements'] = data['numbers']
-        self.output[4]['elements'] = data["builtin"]
-        self.output[5]['elements'] = data['prepro']
-        self.output[6]['elements'] = data["special"]
-        self.output[7]['elements'] = data['tabs']
+        output = self.output
+        output[0]['elements'] = dplain
+        output[1]['elements'] = dstrings
+        output[2]['elements'] = dcomments
+        output[3]['elements'] = dnumbers
+        output[4]['elements'] = dbuiltin
+        output[5]['elements'] = dprepro
+        output[6]['elements'] = dspecial  # XXX needs fixing
+        output[7]['elements'] = dtabs
+        ce.indents = indents
+        # t2 = perf_counter()
+        # print("highlighter:", round((t2 - t) * 1000, 2), "ms")
 
-        # enter sleep
-        with self._state:
-            self._paused.set()  # enter sleep mode
-        return
+        self.ce.tag_redraw()
+
 
 # =====================================================
 #                    OPENGL DRAWCALS
 # =====================================================
 
+def get_cw(loc, firstx, lines):
+    for idx, line in enumerate(lines):
+        if len(line.body) > 1:
+            return loc(idx, 1)[0] - firstx
 
-def draw_callback_px(self, context):
+
+def draw_callback_px(context):
     """Draws Code Editors Minimap and indentation marks"""
+    t = perf_counter()
+    # print("\n"*10)
+    text = context.edit_text
 
-    def draw_line(origin, length, thickness, vertical=False):
-        """Drawing lines with polys, its faster"""
-        x = (origin[0] + thickness) if vertical else (origin[0] + length)
-        y = (origin[1] + length) if vertical else (origin[1] + thickness)
-        seq = [origin, (x, origin[1]), (x, y), (origin[0], y)]
-        draw_quads_2d(seq, color)
-
-    # abort if another text editor
-    if self.area == context.area and self.window == context.window:
-        bgl.glEnable(bgl.GL_BLEND)
-    else:
+    if not text:
         return
 
-    start = time.clock()
+    ce = get_handle(context)
+
+    if text != ce.text:
+        ce.update_text(text)
+
+    bgl_glEnable(bgl_GL_BLEND)
 
     # init params
     font_id = 0
-    self.width = next(region.width for region in context.area.regions if region.type == 'WINDOW')
-    self.height = next(region.height for region in context.area.regions if region.type == 'WINDOW')
-    dpi_r = context.preferences.system.dpi / 72.0
-    self.left_edge = self.width - round(dpi_r*(self.width+5*self.minimap_width)/10.0)
-    self.right_edge = self.width - round(dpi_r*15)
-    self.opacity = min(max(0, (self.width-self.min_width) / 100.0), 1)
+    region = context.area.regions[-1]
+    rw, rh = region.width, region.height
+    mmapw = ce.mmapw
+    wunits = get_widget_unit(context)
+    scrolledge = rw - wunits // 5 * 3
 
+    ledge = ce.ledge = rw - mmapw
+    redge = ce.redge = scrolledge
     # compute character dimensions
-    mcw = dpi_r * self.minimap_symbol_width         # minimap char width
-    mlh = round(dpi_r * self.minimap_line_height)   # minimap line height
-    fs = context.space_data.font_size
-    cw = round(dpi_r * round(2 + 0.6 * (fs - 4)))                     # char width
+    dpi_r = context.preferences.system.dpi / 72.0
+    mcw = int(dpi_r * ce.mmsymw)         # minimap char width
+    mlh = round(dpi_r * ce.mmlineh)   # minimap line height
+    st = context.space_data
+    fs = st.font_size
+    loc = st.region_location_from_cursor
+    xoffs, xstart = get_xoffs(text, st)
+    lines = text.lines
+
+    # line height
+    lh_dpi = (wunits * st.font_size) // 20
+    lh = lh_dpi + int(0.3 * lh_dpi)
+
+    # char width
+    cw = get_cw(loc, xstart, lines)
+    # cw = round(dpi_r * round(2 + 0.6 * (fs - 4)))                     # char width
     ch = round(dpi_r * round(2 + 1.3 * (fs - 2) + ((fs % 10) == 0)))  # char height
-
+    sttop = st.top
+    visl = st.visible_lines
+    sttopvisl = sttop + visl
     # panel background box
-    self.tab_width = round(dpi_r * 25) if (self.tabs and len(bpy.data.texts) > 1) else 0
+    texts = bpy.data.texts
+    lenl = len(lines)
+    lent = len(texts)
+    tabw = ce.tabw = round(dpi_r * 25) if (ce.show_tabs and lent > 1) else 0
+    tabh = min(200, int(rh / lent))
+    ldig = len(str(lenl)) if st.show_line_numbers else 0
+    ce.linebarw = int(dpi_r * 5) + cw * ldig
 
-    color = (
-        self.background.r,
-        self.background.g,
-        self.background.b,
-        (1 - self.bg_opacity) * self.opacity)
+    max_slide = max(0, mlh * (lenl + rh / ch) - rh)
+    ce.slide = slide = (max_slide * sttop / lenl).__int__()
+    mapymin = rh - mlh * sttop + slide
+    mapymax = rh - mlh * sttopvisl + slide
+    startrange = (sttop - (rh - mapymin) // mlh)
+    endrange = startrange + (rh // mlh)
+    # update opacity for now
+    ce.opacity = opac = min(max(0, (rw - ce.min_width) / 100.0), 1)
 
-    seq = [
-        (self.left_edge - self.tab_width, self.height),
-        (self.right_edge, self.height),
-        (self.right_edge, 0),
-        (self.left_edge - self.tab_width, 0)]
+    x = ledge - tabw
 
+    hash_curr = hash((*lines[startrange:endrange],))
+
+    # rebuild visible range
+    if startrange not in ce.maprange or endrange not in ce.maprange:
+        ce.maprange = range(startrange, endrange + 1)
+    # minimap update is now cheap. do it every redraw
+    ce.update_text(text)
+    color = (*ce.background, (1 - ce.bg_opacity) * opac)
+    seq = [(x, rh), (redge, rh), (redge, 0), (x, 0)]
+    segments = ce.segments
     draw_quads_2d(seq, color)
-
-    # line numbers background
-    space = context.space_data
-    if space.text:
-        lines = len(space.text.lines)
-        lines_digits = len(str(lines)) if space.show_line_numbers else 0
-        self.line_bar_width = int(dpi_r*5)+cw*(lines_digits)
-
-        color = (
-            self.background.r,
-            self.background.g,
-            self.background.b,
-            1)
-
-        seq = [
-            (0, self.height),
-            (self.line_bar_width, self.height),
-            (self.line_bar_width, 0),
-            (0, 0)]
-
-        draw_quads_2d(seq, color)
-
-        # shadow
-        bgl.glLineWidth(1.0 * dpi_r)
-        for id, intensity in enumerate([0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]):
-            color = 0.0, 0.0, 0.0, intensity
-
-            seq = [
-                (self.line_bar_width + id, 0),
-                (self.line_bar_width + id, self.height)]
-
-            draw_lines_2d(seq, color)
-
     # minimap shadow
-    for id, intensity in enumerate([0.2, 0.1, 0.07, 0.05, 0.03, 0.02, 0.01]):
-        color = 0.0, 0.0, 0.0, intensity * self.opacity
-
-        seq = [
-            (self.left_edge - id - self.tab_width, 0),
-            (self.left_edge - id - self.tab_width, self.height)]
-
+    bgl_glLineWidth(1.0)
+    for idx, intensity in enumerate([.2, .1, .07, .05, .03, .02, .01]):
+        color = 0.0, 0.0, 0.0, intensity * opac
+        seq = [(ledge - idx - tabw, 0), (ledge - idx - tabw, rh)]
         draw_lines_2d(seq, color)
-
     # divider
-    if self.tab_width:
-        color = 0.0, 0.0, 0.0, 0.2 * self.opacity
-        seq = [(self.left_edge, 0), (self.left_edge, self.height)]
+    if tabw:
+        color = 0.0, 0.0, 0.0, 0.2 * opac
+        seq = [(ledge, 0), (ledge, rh)]
         draw_lines_2d(seq, color)
-
     # if there is text in window
-    if space.text and self.opacity:
-
+    if opac:
         # minimap horizontal sliding based on text block length
-        max_slide = max(0, mlh*(lines+self.height/ch) - self.height)
-        self.slide = int(max_slide * space.top / lines)
-        minimap_top_line = int(self.slide/mlh)
-        minimap_bot_line = int((self.height+self.slide)/mlh)
-
-        # draw minimap visible box
-        alpha = 0.1 if self.in_minimap else 0.07
-        color = 1.0, 1.0, 1.0, alpha * self.opacity
-
-        seq = [(self.left_edge, self.height - mlh * space.top + self.slide),
-               (self.right_edge, self.height - mlh * space.top + self.slide),
-               (self.right_edge, self.height - mlh * (space.top + space.visible_lines) + self.slide),
-               (self.left_edge, self.height - mlh * (space.top + space.visible_lines) + self.slide)]
-
+        mmtop = slide // mlh
+        mmbot = (rh + slide) // mlh
+        # minimap hover alpha
+        alpha = 0.1 if ce.in_minimap else 0.07
+        color = 1.0, 1.0, 1.0, alpha * opac
+        ymin = rh - mlh * sttop + slide
+        ymax = rh - mlh * sttopvisl + slide
+        seq = ((ledge, ymin), (redge, ymin), (redge, ymax), (ledge, ymax))
         draw_quads_2d(seq, color)
-
         # draw minimap code
-        for segment in self.segments[:-1]:
-            color = segment['col'][0], segment['col'][1], segment['col'][2], 0.4*self.opacity
-            for id, element in enumerate(segment['elements'][minimap_top_line:minimap_bot_line]):
-                loc_y = mlh*(id+minimap_top_line+3) - self.slide
-                for sub_element in element:
-                    draw_line((self.left_edge+int(mcw*(sub_element[0]+4)), self.height-loc_y),
-                    int(mcw*(sub_element[1]-sub_element[0])),
-                    int(0.5 * mlh))
-
-        # minimap code marks
-        color = (self.segments[-2]['col'][0],
-                 self.segments[-2]['col'][1],
-                 self.segments[-2]['col'][2],
-                 0.3 * self.block_trans * self.opacity)
-        for id, element in enumerate(self.segments[-2]['elements']):
-            for sub_element in element:
-                if sub_element[2] >= space.top or id < space.top + space.visible_lines:
-                    draw_line(
-                        (self.left_edge + int(mcw * (sub_element[0] + 4)),
-                         self.height - mlh * (id + 3) + self.slide),
-                        -int(mlh * (sub_element[2] - id - 1)),
-                        int(0.5 * mlh),
-                        True)
-
-    # draw dotted indentation marks
-    bgl.glLineWidth(1.0 * dpi_r)
-    if space.text:
-        color = (self.segments[0]['col'][0],
-                 self.segments[0]['col'][1],
-                 self.segments[0]['col'][2],
-                 self.indent_trans)
-        for id, element in enumerate(self.segments[-1]['elements'][
-                space.top:space.top + space.visible_lines]):
-            loc_y = id
-            for sub_element in element:
-                draw_line((
-                    int(dpi_r * 10) + cw * (lines_digits + sub_element[0] + 4),
-                    self.height - ch * (loc_y)),
-                    -ch,
-                    int(1 * dpi_r),
-                    True)
-
-    #     draw code block marks
-        color = (self.segments[-2]['col'][0],
-                 self.segments[-2]['col'][1],
-                 self.segments[-2]['col'][2],
-                 self.block_trans)
-        for id, element in enumerate(self.segments[-2]['elements']):
-            for sub_element in element:
-                if sub_element[2] >= space.top or id < space.top+space.visible_lines:
-
-                    seq = [
-                        (int(dpi_r*10+cw*(lines_digits+sub_element[0])), self.height-ch*(id+1-space.top)),
-                        (int(dpi_r*10+cw*(lines_digits+sub_element[0])), self.height-int(ch*(sub_element[2]-space.top))),
-                        (int(dpi_r*10+cw*(lines_digits+sub_element[0]+1)), self.height-int(ch*(sub_element[2]-space.top)))
-                    ]
-                    draw_lines_2d(seq, color)
-
-    # tab dividers
-    if self.tab_width and self.opacity:
-        self.tab_height = min(200, int(self.height/len(bpy.data.texts)))
-        y_loc = self.height-5
-        for text in bpy.data.texts:
-        #     # tab selection
-            if text.name == self.in_tab:
-                color = 1.0, 1.0, 1.0, 0.05 * self.opacity
-                seq = [(self.left_edge-self.tab_width, y_loc),
-                       (self.left_edge, y_loc),
-                       (self.left_edge, y_loc-self.tab_height),
-                       (self.left_edge-self.tab_width, y_loc-self.tab_height)]
-
-                draw_quads_2d(seq, color)
-
-        #     tab active
-            if context.space_data.text and text.name == context.space_data.text.name:
-                color = 1.0, 1.0, 1.0, 0.05*self.opacity
-
-                seq = [(self.left_edge-self.tab_width, y_loc),
-                       (self.left_edge, y_loc),
-                       (self.left_edge, y_loc-self.tab_height),
-                       (self.left_edge-self.tab_width, y_loc-self.tab_height)]
-
-                draw_quads_2d(seq, color)
-
-            color = 0.0, 0.0, 0.0, 0.2*self.opacity
-            y_loc -= self.tab_height
-
-            seq = [(self.left_edge-self.tab_width, y_loc), (self.left_edge, y_loc)]
-
+        thickness = mlh // 2
+        bgl_glLineWidth(thickness)
+        for seg in segments[:-1]:
+            color = seg['col'][0], seg['col'][1], seg['col'][2], 0.4 * opac
+            seq = deque()
+            seq_extend = seq.extend
+            for id, elem in enumerate(seg['elements'][mmtop:mmbot]):
+                y = rh - (mlh * (id + mmtop + 1) - slide)
+                for sub_element in elem:
+                    selem0 = sub_element[0]
+                    x = ledge + mcw * (selem0 + 4)
+                    if x > scrolledge:
+                        continue
+                    x2 = mcw * (sub_element[1] - selem0)
+                    if x + (x2 * mcw) > scrolledge:
+                        x2 = (scrolledge - x) // mcw
+                    seq_extend(((x, y), (x + x2, y)))
             draw_lines_2d(seq, color)
 
-    # draw fps
-    blf.color(font_id, 1, 1, 1, 0.2)
-    blf.size(font_id, fs, int(dpi_r*72))
-    blf.position(font_id, self.left_edge-50, 5, 0)
-    blf.draw(font_id, str(round(1/(time.clock() - start),3)))
+        # minimap code marks - vertical
+        seq2 = deque()
+        seq2_extend = seq2.extend
+        yoffs = rh + slide
+        color = (*segments[-2]['col'][:3], 0.3 * ce.block_trans * opac)
 
-    # draw line numbers
-    if space.text:
-        blf.color(font_id, self.segments[0]['col'][0],
-                 self.segments[0]['col'][1],
-                 self.segments[0]['col'][2],
-                 0.5)
-        for id in range(space.top, min(space.top+space.visible_lines+1, lines+1)):
-            if self.in_line_bar and self.segments[-2]['elements'][id-1]:
-                blf.color(font_id, self.segments[-2]['col'][0],
-                          self.segments[-2]['col'][1],
-                          self.segments[-2]['col'][2],
-                          1)
+        mmapxoffs = ledge + 4
 
-                blf.position(font_id, 2+int(0.5*cw*(len(str(lines))-1)), self.height-ch*(id-space.top)+3, 0)
-                blf.draw(font_id, '→')
-                blf.draw(font_id, '↓')
-                blf.color(font_id, self.segments[0]['col'][0],
-                          self.segments[0]['col'][1],
-                          self.segments[0]['col'][2],
-                          0.5)
-            else:
-                blf.position(font_id, 2+int(0.5*cw*(len(str(lines))-len(str(id)))), self.height-ch*(id-space.top)+3, 0)
-                blf.draw(font_id, str(id))
+        # first absolute x value
+        tab_width = st.tab_width
+        indent = cw * tab_width
+
+        # draw indent guides in the minimap
+        firstx = (wunits // 2 + (st.show_line_numbers and (ldig * cw) or 0))
+        for idx, levels in enumerate(ce.indents[mmtop:mmbot], mmtop):
+            if levels:
+                for level in range(levels):
+                    x = mmapxoffs + (mcw * 4 * level)
+                    ymax = yoffs - mlh * idx
+                    ymin = ymax - mlh
+                    seq2_extend(((x, ymin), (x, ymax)))
+
+                    # draw indent guides in the editor
+                    ymax = rh - lh * (idx + 1 - sttop) + lh
+                    ymin = ymax - lh
+
+                    bgl_glLineWidth(int(wunits * 0.15 * 0.5))
+                    if -lh < ymin < rh:
+                        x = xstart + indent * level
+
+                        # don't draw indents beyond line numbers
+                        if x >= firstx - 10:
+                            seq2_extend(((x, ymin), (x, ymax)))
+                            continue
+
+        draw_lines_2d(seq2, color)
+
+    bgl_glLineWidth(1.0 * dpi_r)
+    # tab dividers
+    if tabw and opac:
+        # ce.tab_height = tabh = min(200, int(rh / lent))
+        y_loc = rh - 5
+        for txt in texts:
+        #     # tab selection
+            if txt.name == ce.in_tab:
+                color = 1.0, 1.0, 1.0, 0.05 * opac
+                seq = [(ledge - tabw, y_loc),
+                       (ledge, y_loc),
+                       (ledge, y_loc - tabh),
+                       (ledge - tabw, y_loc - tabh)]
+                draw_quads_2d(seq, color)
+            # tab active
+            if txt.name == text.name:
+                color = 1.0, 1.0, 1.0, 0.05 * opac
+                seq = [(ledge - tabw, y_loc),
+                       (ledge, y_loc),
+                       (ledge, y_loc - tabh),
+                       (ledge - tabw, y_loc - tabh)]
+                draw_quads_2d(seq, color)
+
+            color = 0.0, 0.0, 0.0, 0.2 * opac
+            y_loc -= tabh
+            seq = [(ledge - tabw, y_loc), (ledge, y_loc)]
+            draw_lines_2d(seq, color)
+    # if tabw and opac:
+    #     ce.tabh = tabh = min(200, int(rh / len(bpy.data.texts)))
+    #     y_loc = rh - 5
+    #     for txt in bpy.data.texts:
+    #         # tab selection
+    #         if txt.name == ce.in_tab:
+    #             color = 1.0, 1.0, 1.0, 0.05 * opac
+    #             seq = [(ledge-tabw, y_loc),
+    #                    (ledge, y_loc),
+    #                    (ledge, y_loc-tabh),
+    #                    (ledge-tabw, y_loc-tabh)]
+    #             # seq = [(x, y_loc),
+    #             #        (ledge, y_loc),
+    #             #        (ledge, y_loc - tabh),
+    #             #        (x, y_loc - tabh)]
+
+    #             draw_quads_2d(seq, color)
+
+    #     #     tab active
+    #         if text and txt.name == text.name:
+    #             color = 1.0, 1.0, 1.0, 0.05 * opac
+    #             seq = [(x, y_loc),
+    #                    (ledge, y_loc),
+    #                    (ledge, y_loc - tabh),
+    #                    (x, y_loc - tabh)]
+    #             draw_quads_2d(seq, color)
+    #         color = 0.0, 0.0, 0.0, 0.2 * opac
+    #         y_loc -= tabh
+    #         seq = [(x, y_loc), (ledge, y_loc)]
+    #         draw_lines_2d(seq, color)
 
     # draw file names
-    if self.tab_width:
-        blf.enable(font_id, blf.ROTATION)
-        blf.rotation(font_id, 1.570796)
-        y_loc = self.height
-        for text in bpy.data.texts:
-            text_max_length = max(2, int((self.tab_height - 40)/cw))
-            name = text.name[:text_max_length]
-            if text_max_length < len(text.name):
+    if tabw:
+        blf_size(font_id, fs - 1, int(dpi_r * 72))
+        blf_enable(font_id, blf_ROTATION)
+        blf_rotation(font_id, 1.5707963267948966)
+        y_loc = rh
+        for txt in texts:
+            text_max_length = max(2, int((tabh - 40) / cw))
+            name = txt.name[:text_max_length]
+            if text_max_length < len(txt.name):
                 name += '...'
-            blf.color(font_id, self.segments[0]['col'][0],
-                      self.segments[0]['col'][1],
-                      self.segments[0]['col'][2],
-                      (0.7 if text.name == self.in_tab else 0.4)*self.opacity)
-                         
-            blf.position(font_id,
-                         self.left_edge-round((self.tab_width-ch)/2.0)-5,
-                         round(y_loc-(self.tab_height/2)-cw*len(name)/2),
-                         0)
-            blf.draw(font_id, name)
-            y_loc -= self.tab_height
+            blf_color(font_id, *segments[0]['col'][:3],
+                      (0.7 if txt.name == ce.in_tab else 0.4) * opac)
+            blf_position(font_id, ledge - round((tabw - ch) / 2.0) - 5,
+                         round(y_loc - (tabh / 2) - cw * len(name) / 2), 0)
+            blf_draw(font_id, name)
+            y_loc -= tabh
 
     # restore opengl defaults
-    bgl.glLineWidth(1.0)
-    bgl.glDisable(bgl.GL_BLEND)
-    blf.disable(font_id, blf.ROTATION)
-    return
+    bgl_glLineWidth(1.0)
+    bgl_glDisable(bgl_GL_BLEND)
+    blf_rotation(font_id, 0)
+    blf_disable(font_id, blf_ROTATION)
+    # t2 = perf_counter()
+    # print("draw:", round((t2 - t) * 1000, 2), "ms")
 
 
-# =====================================================
-#                       OPERATORS
-# =====================================================
+class CodeEditorBase:
+    bl_options = {'INTERNAL'}
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "edit_text", False)
 
 
-class CodeEditor(bpy.types.Operator):
-    """Modal operator running Code Editor"""
-    bl_idname = "text.codeeditor_start"
-    bl_label = "Code Editor"
-
-    # minimap scrolling
-    def scroll(self, context, event):
-        if context.space_data.text:
-            # dpi_ratio for ui scale
-            dpi_r = context.preferences.system.dpi / 72.0
-            mlh = round(dpi_r * self.minimap_line_height)   # minimap line height
-            # box center in px
-            box_center = self.height - mlh * (context.space_data.top + context.space_data.visible_lines/2)
-            self.to_box_center = box_center + self.slide - event.mouse_region_y
-            # scroll will scroll 3 lines thus * 0.333
-            nlines = 0.333 * self.to_box_center / mlh
-            bpy.ops.text.scroll(lines=round(nlines))
-        return
+class CE_OT_scroll(CodeEditorBase, Operator):
+    bl_idname = 'ce.scroll'
+    bl_label = "Scroll"
+    bl_options = {'INTERNAL', 'BLOCKING'}
 
     def modal(self, context, event):
-        # function only if in area invoked in
-        if (context.space_data and
-            context.space_data.type == 'TEXT_EDITOR' and
-            self.area == context.area and
-            self.window == context.window):
-
-            # does not work with word wrap
-            context.space_data.show_line_numbers = True
-            context.space_data.show_word_wrap = False
-            context.space_data.show_syntax_highlight = True
-            context.area.tag_redraw()
-
-            # minimap scrolling and tab clicking
-            if event.type == 'MOUSEMOVE':
-                if ((0 < event.mouse_region_x < self.width) and
-                    (0 < event.mouse_region_y < self.height)):
-                    self.in_area = True
-                else:
-                    self.in_area = False
-
-                if ((0 < event.mouse_region_x < self.line_bar_width) and
-                    (0 < event.mouse_region_y < self.height)):
-                    self.in_line_bar = True
-                else:
-                    self.in_line_bar = False
-
-                if self.drag:
-                    self.scroll(context, event)
-                if ((self.left_edge < event.mouse_region_x < self.right_edge) and
-                    (0 < event.mouse_region_y < self.height)):
-                    self.in_minimap = True
-                else:
-                    self.in_minimap = False
-
-                if ((self.left_edge - self.tab_width < event.mouse_region_x < self.left_edge) and
-                     (0 < event.mouse_region_y < self.height)):
-                    try:
-                        tab_id = int((self.height-event.mouse_region_y) / self.tab_height)
-                    except ZeroDivisionError:
-                        tab_id = 0
-                    if tab_id < len(bpy.data.texts):
-                        self.in_tab = bpy.data.texts[tab_id].name
-                    else:
-                        self.in_tab = None
-                else:
-                    self.in_tab = None
-
-            if self.in_minimap and self.opacity and event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-                self.drag = True
-                self.scroll(context, event)
-                return {'RUNNING_MODAL'}
-            if self.in_line_bar and event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-                return {'RUNNING_MODAL'}
-            if self.in_tab and self.opacity and event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-                context.space_data.text = bpy.data.texts[self.in_tab]
-                return {'RUNNING_MODAL'}
-            if self.opacity and event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
-                self.thread.restart(context.space_data.text)
-                self.drag = False
-
-            # typing characters - update minimap when whitespace
-            if self.opacity and (event.unicode == ' ' or event.type in {'RET', 'NUMPAD_ENTER', 'TAB'}):
-                self.thread.restart(context.space_data.text)
-
-            # custom home handling
-            if self.in_area and event.type == 'HOME' and event.value == 'PRESS' and not event.ctrl:
-                if event.alt:
-                    bpy.ops.text.move(type='LINE_BEGIN')
-                    return {'RUNNING_MODAL'}
-                line = context.space_data.text.current_line.body
-                cursor_loc = context.space_data.text.select_end_character
-                new_loc = custom_home(line, cursor_loc)
-                for x in range(cursor_loc - new_loc):
-                    # this is awful but blender ops suck balls
-                    if event.shift:
-                        bpy.ops.text.move_select(type='PREVIOUS_CHARACTER')
-                    else:
-                        bpy.ops.text.move(type='PREVIOUS_CHARACTER')
-                return {'RUNNING_MODAL'}
-
-            # custom brackets etc. handling
-            elif self.in_area and event.unicode in ['(', '"', "'", '[', '{'] and event.value == 'PRESS':
-                select_loc = context.space_data.text.select_end_character
-                cursor_loc = context.space_data.text.current_character
-                line = context.space_data.text.current_line.body
-                if cursor_loc == select_loc and cursor_loc < len(line) and line[cursor_loc] not in " \n\t\r)]},.+-*/":
-                    return {'PASS_THROUGH'}
-                if event.unicode == '(': bpy.ops.text.insert(text='()')
-                if event.unicode == '"': bpy.ops.text.insert(text='""')
-                if event.unicode == "'": bpy.ops.text.insert(text="''")
-                if event.unicode == "[": bpy.ops.text.insert(text="[]")
-                if event.unicode == "{": bpy.ops.text.insert(text="{}")
-                bpy.ops.text.move(type='PREVIOUS_CHARACTER')
-                return {'RUNNING_MODAL'}
-
-            # smart complete ALT-C
-            elif self.in_area and event.unicode == 'c' and event.value == 'PRESS' and event.alt:
-                if context.space_data.text.select_end_character == context.space_data.text.current_character:
-                    bpy.ops.text.select_word()
-                bpy.ops.text.copy()
-                clipboard = bpy.data.window_managers[0].clipboard
-                context.window_manager.clipboard = smart_complete(clipboard)
-                bpy.ops.text.paste()
-                context.window_manager.clipboard = ""
-                return {'RUNNING_MODAL'}
-
-            # comment ALT-D
-            elif self.in_area and event.unicode == 'd' and event.value == 'PRESS' and event.alt:
-                if context.space_data.text.select_end_character == context.space_data.text.current_character:
-                    bpy.ops.text.select_word()
-                bpy.ops.text.comment()
-                return {'RUNNING_MODAL'}
-
-            # end by button and code editor cleanup
-            if str(context.area) not in context.window_manager.code_editors:
-                del self.thread
-                bpy.types.SpaceTextEditor.draw_handler_remove(self._handle, 'WINDOW')
-                return {'FINISHED'}
-
-        # end by F8 for reloading addons
-        if event.type == 'F8':
-            editors = context.window_manager.code_editors.split('&')
-            editors.remove(str(context.area))
-            context.window_manager.code_editors = '&'.join(editors)
-            del self.thread
-            bpy.types.SpaceTextEditor.draw_handler_remove(self._handle, 'WINDOW')
+        ev, et = event.value, event.type
+        if et == 'LEFTMOUSE' and ev == 'RELEASE':
+            context.window_manager.event_timer_remove(self.t)
             return {'FINISHED'}
-
-        return {'PASS_THROUGH'}
+        elif et == 'TIMER':
+            return self.scroll_timer(context, event)
+            # return self.scroll_timer(context, event)
+        return {'RUNNING_MODAL'}
 
     def invoke(self, context, event):
-        # Version with one 'invoke scene' operator handling multiple text editor areas has the same performance
-        # as one operator for eatch area - version 2 is implemented for simplicity
-        if context.area.type != 'TEXT_EDITOR':
-            self.report({'WARNING'}, "Text Editor not found, cannot run operator")
-            return {'CANCELLED'}
+        ce = self.ce = get_handle(context)
+        st = context.space_data
+        rh = context.region.height
+        ignore = {'INBETWEEN_MOUSEMOVE', 'MOUSEMOVE',
+                  'TIMER', 'NOTHING', 'PRESS'}
 
-        # init handlers
-        args = (self, context)
-        self._handle = bpy.types.SpaceTextEditor.draw_handler_add(draw_callback_px, args, 'WINDOW', 'POST_PIXEL')
-        context.window_manager.modal_handler_add(self)
+        fs = st.font_size
+        dpi_r = context.preferences.system.dpi / 72.0
+        ch = round(dpi_r * round(2 + 1.3 * (fs - 2) + ((fs % 10) == 0)))
+        mlh = round(context.preferences.system.dpi / 72.0 * ce.mmlineh)
+        slide_max = max(0, mlh * (len(context.edit_text.lines) + rh / ch) - rh)
 
-        # register operator in winman prop
-        if not bpy.context.window_manager.code_editors:
-            bpy.context.window_manager.code_editors = str(context.area)
-        else:
-            editors = bpy.context.window_manager.code_editors.split('&')
-            editors.append(str(context.area))
-            bpy.context.window_manager.code_editors = '&'.join(editors)
+        self.args = st, rh, mlh, slide_max, ignore
+        context.window.cursor_set('HAND')
+        wm = context.window_manager
+        wm.modal_handler_add(self)
+        self.t = wm.event_timer_add(0.001, window=context.window)
+        self.scroll = bpy.ops.text.scroll_bar
+        return self.scroll_timer(context, event)
+
+    def scroll_timer(self, context, event):
+        dpi_r = context.preferences.system.dpi / 72.0
+        mlh = round(dpi_r * self.ce.mmlineh) 
+        # box center in px
+        mry = event.mouse_region_y
+        box_center = context.region.height - mlh * (context.space_data.top + context.space_data.visible_lines/2)
+        self.to_box_center = box_center + self.ce.slide - mry
+        nlines = 0.333 * self.to_box_center / mlh
+        bpy.ops.text.scroll(lines=round(nlines))
+        return {'RUNNING_MODAL'}
+
+
+
+
+
+
+
+        # st = context.space_data
+        # ev, et = event.value, event.type
+        # slide = self.ce.slide
+        # if et == 'LEFTMOUSE' and ev == 'RELEASE':
+        #     context.window_manager.event_timer_remove(self.t)
+        #     return {'FINISHED'}
+        # mlh = (round(context.preferences.system.dpi / 72.0 * self.ce.mmlineh))
+        # rh = context.region.height
+        # sttop = st.top
+        # stvisl = st.visible_lines
+        # lenl = len(st.text.lines)
+        # mry = (event.mouse_region_y)
+
+        # ymin = rh - mlh * sttop + slide
+        # ymax = rh - mlh * (sttop + stvisl) + slide
+
+        # negexp = (lenl ** -1 * 3) * 100
+        # ymid2 = ((ymin - ymax) // 2 + ymax)
+        # r = ((ymid2 - mry) / (lenl ** negexp))
+        # n = True
+        # if not round(r, 0):
+        #     if ymid2 // 10 < mry // 10:
+        #         r = (ymid2 - mry) // lenl
+        #     elif ymid2 // 10 > mry // 10:
+        #         r = ((ymid2 - mry) // lenl) + 1
+        #     else:
+        #         n = False
+        #         r *= 10
+        # if n:
+        #     r = round(r)
+        # if int(r):
+        #     self.scroll('INVOKE_DEFAULT', lines=r)
+        # return {'RUNNING_MODAL'}
+
+
+# capture clicks inside minimap
+class CE_OT_cursor_set(CodeEditorBase, Operator):
+    bl_idname = "ce.cursor_set"
+    bl_label = "Set Cursor"
+    options = {'INTERNAL', 'BLOCKING'}
+
+    def invoke(self, context, event):
+        ce = get_handle(context)
+        if ce and ce.in_minimap:
+            return bpy.ops.ce.scroll('INVOKE_DEFAULT')
+        return {'PASS_THROUGH'}
+
+
+# handle mouse events in text editor to support hover and scroll
+class CE_OT_mouse_move(CodeEditorBase, Operator):
+    bl_idname = "ce.mouse_move"
+    bl_label = "Mouse Move"
+
+    def invoke(self, context, event):
+        ce = get_handle(context)
+        if ce:
+            ce.update(context, event)
+        return {'CANCELLED'}
+
+
+# main class for storing runtime draw props
+class CodeEditorMain:
+    def __init__(self, context):
 
         # user controllable in addon preferneces
-        addon_prefs = bpy.context.preferences.addons[__name__].preferences
-        self.bg_opacity = addon_prefs.opacity
-        self.tabs = addon_prefs.show_tabs
-        self.minimap_width = addon_prefs.minimap_width
-        self.min_width = addon_prefs.window_min_width
-        self.minimap_symbol_width = addon_prefs.symbol_width
-        self.minimap_line_height = addon_prefs.line_height
-        context.space_data.show_margin = addon_prefs.show_margin
-        context.space_data.margin_column = addon_prefs.margin_column
-        self.block_trans = 1-addon_prefs.block_trans
-        self.indent_trans = 1-addon_prefs.indent_trans
+        p = context.preferences
+        ap = p.addons[__name__].preferences
+        self.bg_opacity = ap.opacity
+        self.show_tabs = ap.show_tabs
+        self.mmapw = ap.minimap_width
+        self.min_width = ap.window_min_width
+        self.mmsymw = ap.symbol_width
+        self.mmlineh = ap.line_height
+        self.block_trans = ap.block_trans
+        self.indent_trans = ap.indent_trans
 
-        # init operator params
-        self.area = context.area
-        self.window = context.window
-        self.in_area = True
-        self.opacity = 1.0
-        self.text_name = None
-        self.width = next(region.width for region in context.area.regions if region.type=='WINDOW')
-        self.height = next(region.height for region in context.area.regions if region.type=='WINDOW')
-        dpi_r = context.preferences.system.dpi / 72.0
-        self.left_edge = self.width - round(dpi_r*(self.width+5*self.minimap_width)/10.0)
-        self.right_edge = self.width - round(dpi_r*15)
+        # init params
+        self.st = context.space_data
         self.in_minimap = False
+        region = self.region = context.area.regions[-1]
+        rw = region.width
+        self.opacity = min(max(0, (rw - self.min_width) / 100.0), 1)
+        self.height = region.height
+        dpi_r = self.dpi_r = p.system.dpi / 72.0
+        self.ledge = rw - round(dpi_r * (rw + 5 * self.mmapw) / 10.0)
+        self.redge = rw - round(dpi_r * 15)
+        self.tabw = round(dpi_r * 25) if self.show_tabs else 0
         self.in_tab = None
-        self.tab_width = 0
         self.tab_height = 0
         self.drag = False
-        self.to_box_center = 0
         self.slide = 0
-        self.line_bar_width = 0
-        self.in_line_bar = False
-
+        self.text = text = context.edit_text
+        if text:
+            self.hash_prev = hash((*text.lines[:],))
         # get theme colors
-        current_theme = bpy.context.preferences.themes.items()[0][0]
-        tex_ed = bpy.context.preferences.themes[current_theme].text_editor
+        current_theme = p.themes.items()[0][0]
+        tex_ed = p.themes[current_theme].text_editor
         self.background = tex_ed.space.back
+        self.maprange = range(0, 1)
+        self.prev_update = perf_counter()
+        self.defer_update = False
 
-        # get dpi, font size
-        self.dpi = bpy.context.preferences.system.dpi
+        # syntax theme colors
+        items = (
+            tex_ed.space.text,
+            tex_ed.syntax_string,
+            tex_ed.syntax_comment,
+            tex_ed.syntax_numbers,
+            tex_ed.syntax_builtin,
+            tex_ed.syntax_preprocessor,
+            tex_ed.syntax_special,
+            (1, 0, 0))
 
-        #temp folder for autosave - TODO
-        #self.temp = bpy.context.preferences.filepaths.temporary_directory
+        self.segments = [{'elements': [], 'col': i} for i in items]
+        self.indents = None
+        # self.data['indents'] = defaultdict(list)
+        self.tag_redraw = context.area.tag_redraw
 
-        # list to hold text info
-        self.segments = []
-        self.segments.append({'elements': [], 'col': tex_ed.space.text})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_string})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_comment})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_numbers})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_builtin})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_preprocessor})
-        self.segments.append({'elements': [], 'col': tex_ed.syntax_special})
-        self.segments.append({'elements': [], 'col': (1, 0, 0)})  # Indentation marks
+        # claim a highlighter
+        self.engine = MinimapEngine(self, self.segments)
+        self.engine.highlight(bpy.data.texts[:].index(text))
 
-        # list to hold gui areas
-        self.clickable = []
+    # refresh the highlights
+    def update_text(self, text, delay=None):
+        self.text = text
+        tidx = bpy.data.texts[:].index(text)
+        self.engine.highlight(tidx)
 
-        # threaded syntax highlighter
-        self.thread = ThreadedSyntaxHighlighter(context.space_data.text, self.segments)
-        self.thread.start()
+    # determine the need to update drawing
+    # (hover highlight, minimap refresh, tab activation)
+    def update(self, context, event):
+        ledge = self.ledge
+        opac = self.opacity
+        show_tabs = self.show_tabs
+        tab_xmin = ledge - self.tabw
+        mrx = event.mouse_region_x
+        lbound = tab_xmin if show_tabs and bpy.data.texts else ledge
+        # update minimap symbols if text has changed
+        text = context.edit_text
+        if text != self.text:
+            self.update_text(text)
+        if lbound <= mrx:
+            context.window.cursor_set('DEFAULT')
+        # update minimap highlight when mouse in region
+        in_minimap = ledge <= mrx < self.redge and opac
+        if in_minimap != self.in_minimap:
+            self.in_minimap = in_minimap
+            self.tag_redraw()
+        in_tab = tab_xmin <= mrx < ledge and opac
+        # if in_ttab:
+        #     context.window.cursor_set('DEFAULT')
+        # prevent view layer update
+        return {'CANCELLED'}
 
-        return {'RUNNING_MODAL'}
+
+def update_prefs(self, context):
+    propsdict = {
+        'minimap_width': 'mmapw',
+        'show_tabs': 'show_tabs',
+        'symbol_width': 'mmsymw',
+        'line_height': 'mmlineh',
+        'block_trans': 'block_trans',
+        'indent_trans': 'indent_trans',
+        'opacity': 'bg_opacity',
+        'window_min_width': 'min_width'}
+    for editor in ce_manager.editors:
+        for approp, edprop in propsdict.items():
+            setattr(editor, edprop, getattr(self, approp))
+
 
 class CodeEditorPrefs(bpy.types.AddonPreferences):
     """Code Editors Preferences Panel"""
@@ -872,65 +996,62 @@ class CodeEditorPrefs(bpy.types.AddonPreferences):
         description="0 - fully opaque, 1 - fully transparent",
         min=0.0,
         max=1.0,
-        default=0.2)
+        default=0.2,
+        update=update_prefs)
 
     show_tabs: bpy.props.BoolProperty(
         name="Show Tabs in Panel when multiple text blocks",
         description="Show opened textblock in tabs next to minimap",
-        default=True)
+        default=True,
+        update=update_prefs)
 
     minimap_width: bpy.props.IntProperty(
         name="Minimap panel width",
         description="Minimap base width in px",
-        min=25,
+        min=get_widget_unit(bpy.context) // 5 * 3,
         max=400,
-        default=100)
+        default=110,
+        update=update_prefs)
 
     window_min_width: bpy.props.IntProperty(
         name="Hide Panel when area width less than",
         description="Set 0 to deactivate side panel hiding, set huge to disable panel",
         min=0,
         max=4096,
-        default=600)
+        default=250,
+        update=update_prefs)
 
-    symbol_width: bpy.props.FloatProperty(
+    symbol_width: bpy.props.IntProperty(
         name="Minimap character width",
         description="Minimap character width in px",
-        min=1.0,
-        max=10.0,
-        default=1.0)
+        min=1,
+        max=4,
+        default=1,
+        update=update_prefs)
 
     line_height: bpy.props.IntProperty(
         name="Minimap line spacing",
         description="Minimap line spacign in px",
         min=2,
         max=10,
-        default=2)
+        default=2,
+        update=update_prefs)
 
     block_trans: bpy.props.FloatProperty(
         name="Code block markings transparency",
         description="0 - fully opaque, 1 - fully transparent",
         min=0.0,
         max=1.0,
-        default=0.6)
+        default=0.5,
+        update=update_prefs)
 
     indent_trans: bpy.props.FloatProperty(
         name="Indentation markings transparency",
         description="0 - fully opaque, 1 - fully transparent",
         min=0.0,
         max=1.0,
-        default=0.9)
-
-    show_margin: bpy.props.BoolProperty(
-        name = "Activate global Text Margin marker",
-        default = True)
-
-    margin_column: bpy.props.IntProperty(
-        name="Margin Column",
-        description="Column number to show marker at",
-        min=0,
-        max=1024,
-        default=120)
+        default=0.9,
+        update=update_prefs)
 
     def draw(self, context):
         layout = self.layout
@@ -944,60 +1065,59 @@ class CodeEditorPrefs(bpy.types.AddonPreferences):
         col.prop(self, "symbol_width")
         col.prop(self, "line_height")
         row = layout.row(align=True)
-        row.prop(self, "show_margin", toggle=True)
-        row.prop(self, "margin_column")
         row = layout.row(align=True)
         row.prop(self, "block_trans")
         row.prop(self, "indent_trans")
 
 
-class CodeEditorEnd(bpy.types.Operator):
-    """Removes reference of Code Editors Area ending its modal operator"""
-    bl_idname = "text.codeeditor_end"
-    bl_label = ""
-
-    def execute(self, context):
-        if str(context.area) in context.window_manager.code_editors:
-            editors = context.window_manager.code_editors.split('&')
-            editors.remove(str(context.area))
-            context.window_manager.code_editors = '&'.join(editors)
-        return {'FINISHED'}
-
-# =====================================================
-#                        REGISTER
-# =====================================================
-
-
-def menu_entry(self, context):
-    layout = self.layout
-    layout.operator_context = 'INVOKE_DEFAULT'
-    if str(context.area) in context.window_manager.code_editors:
-        layout.operator("text.codeeditor_end", text="Exit Code Editor", icon="BACK")
-    else:
-        layout.operator("text.codeeditor_start", text="Start Code Editor", icon='FORWARD')
-
 classes = (
     CodeEditorPrefs,
-    CodeEditor,
-    CodeEditorEnd,
-)
-#register, unregister = bpy.utils.register_classes_factory(classes)
+    CE_OT_mouse_move,
+    CE_OT_cursor_set,
+    CE_OT_scroll)
+
+
+def redraw_editors(context):
+    for w in context.window_manager.windows:
+        for a in w.screen.areas:
+            if a.type == 'TEXT_EDITOR':
+                a.tag_redraw()
+
+
+def set_draw(state=True):
+    from bpy_restrict_state import _RestrictContext
+    st = bpy.types.SpaceTextEditor
+    context = bpy.context
+
+    if state:
+        if isinstance(context, _RestrictContext):
+            # delay until context is freed
+            return bpy.app.timers.register(
+                lambda: set_draw(state=state), first_interval=1e-3)
+        elif getattr(set_draw, '_handle', False):
+            pass  # remove handle instead
+        else:
+            setattr(set_draw, '_handle', st.draw_handler_add(
+                draw_callback_px, (context,), 'WINDOW', 'POST_PIXEL'))
+            return redraw_editors(context)
+
+    handle = getattr(set_draw, '_handle', False)
+    if handle:
+        st.draw_handler_remove(handle, 'WINDOW')
+        delattr(set_draw, '_handle')
+        redraw_editors(context)
+
 
 def register():
     from bpy.utils import register_class
     for cls in classes:
         register_class(cls)
-    bpy.types.WindowManager.code_editors = bpy.props.StringProperty(default="")
-    bpy.types.TEXT_MT_context_menu.prepend(menu_entry)
+
+    set_draw(getattr(bpy, "context"))
 
 
 def unregister():
+    set_draw(state=False)
     from bpy.utils import unregister_class
     for cls in reversed(classes):
         unregister_class(cls)
-
-
-if __name__ == "__main__":
-    register()
-
-#CodeEditor
