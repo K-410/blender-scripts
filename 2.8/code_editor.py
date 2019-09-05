@@ -1113,11 +1113,33 @@ def register():
     for cls in classes:
         register_class(cls)
 
+    addon_keymaps = []
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    km = kc.keymaps.get('Text')
+    if not km:
+        km = kc.keymaps.new('Text', space_type='TEXT_EDITOR')
+
+    kmi = km.keymap_items.new('ce.mouse_move', 'MOUSEMOVE', 'ANY')
+    addon_keymaps.append((km, kmi))
+
+    kmi = km.keymap_items.new('ce.cursor_set', 'LEFTMOUSE', 'PRESS')
+    addon_keymaps.append((km, kmi))
+
+    setattr(register, "addon_keymaps", addon_keymaps)
     set_draw(getattr(bpy, "context"))
 
 
 def unregister():
     set_draw(state=False)
+
+    addon_keymaps = getattr(register, 'addon_keymaps', False)
+    if addon_keymaps:
+        for km, kmi in addon_keymaps:
+            km.keymap_items.remove(kmi)
+    delattr(register, 'addon_keymaps')
+    del addon_keymaps
+
     from bpy.utils import unregister_class
     for cls in reversed(classes):
         unregister_class(cls)
