@@ -339,18 +339,19 @@ class MinimapEngine:
             return 0
 
         for idx, line in enumerate(text.lines[start:end], start):
-            hsh = hash(line.body)
+            bod = line.body
+            hsh = hash(bod)
             if hsh == c_hash[idx]:
                 # use cached data instead
                 continue
 
             c_hash[idx] = hsh
 
+
             # TODO wrap into a function
             for i in (dspecial, dplain, dnumbers, dstrings, dbuiltin, dcomments, dprepro):
                 i[idx].clear()
 
-            bod = line.body
             lenbstrip = len(bod.lstrip())
             lenb = len(bod)
             ind = (lenb - lenbstrip) // tab_width
@@ -421,12 +422,10 @@ class MinimapEngine:
                             break
                         # preprocessor
                         elif c == '@':
-                            # print("is @", c)
                             close_plain(elem, cidx)
                             state = 'PREPRO'
                             # close code blocks
                             if block_close:
-                                # print("close block", timer)
                                 close_block(idx, indent, blankl, special_temp, dspecial)
                             break
                     elif state == 'NUMBER' and c not in numericsdot:
@@ -436,7 +435,7 @@ class MinimapEngine:
                         state = ""
                     elif state == 'STRING':
                         if c in "\"\'":
-                            if '\\' not in bod[cidx - 1]:
+                            if '\\\\' not in bod[cidx - 1]:
                                 timer = 0
                         if start_tab:
                             elem[1] = cidx + 4
@@ -464,7 +463,8 @@ class MinimapEngine:
             # count empty lines
             blankl = 0 if has_non_ws else blankl + 1
 
-            # handle line ends
+            # handle line ends - aka when a syntax continues over
+            # multiple lines like multi-line strings etc.
             if not state:
                 elem[2] = lenb
                 dplain[idx].append(elem[1:3])
@@ -481,7 +481,6 @@ class MinimapEngine:
                     # dnumbers[idx].append(elems)
                     dnumbers[idx].append(elems)
 
-        # special_temp size keeps growing, fucking fix this
         # close all remaining blocks
         val = idx + 1 - blankl
         for entry in special_temp:
@@ -517,7 +516,6 @@ def get_cw(loc, firstx, lines):
 def draw_callback_px(context):
     """Draws Code Editors Minimap and indentation marks"""
     t = perf_counter()
-    # print("\n"*10)
     text = context.edit_text
 
     if not text:
@@ -565,10 +563,12 @@ def draw_callback_px(context):
     texts = bpy.data.texts
     lenl = len(lines)
     lent = len(texts)
-    tabw = ce.tabw = round(dpi_r * 25) if (ce.show_tabs and lent > 1) else 0
+    show_tabs = ce.show_tabs
+    tabw = ce.tabw = round(dpi_r * 25) if (show_tabs and lent > 1) else 0
     tabh = min(200, int(rh / lent))
     ldig = len(str(lenl)) if st.show_line_numbers else 0
     ce.linebarw = int(dpi_r * 5) + cw * ldig
+    lbound = ledge - tabw if show_tabs and texts else ledge
 
     max_slide = max(0, mlh * (lenl + rh / ch) - rh)
     ce.slide = slide = (max_slide * sttop / lenl).__int__()
@@ -576,12 +576,13 @@ def draw_callback_px(context):
     mapymax = rh - mlh * sttopvisl + slide
     startrange = (sttop - (rh - mapymin) // mlh)
     endrange = startrange + (rh // mlh)
+    show_ws = ce.show_ws
     # update opacity for now
     ce.opacity = opac = min(max(0, (rw - ce.min_width) / 100.0), 1)
 
     x = ledge - tabw
 
-    hash_curr = hash((*lines[startrange:endrange],))
+    # hash_curr = hash((*lines[startrange:endrange],))
 
     # rebuild visible range
     if startrange not in ce.maprange or endrange not in ce.maprange:
@@ -729,10 +730,11 @@ def draw_callback_px(context):
     #         y_loc -= tabh
     #         seq = [(x, y_loc), (ledge, y_loc)]
     #         draw_lines_2d(seq, color)
-
+    plain_text = segments[0]
+    color = plain_text['col'][:3]
     # draw file names
     if tabw:
-        blf_size(font_id, fs - 1, int(dpi_r * 72))
+        # blf_size(font_id, fs - 1, int(dpi_r * 72))
         blf_enable(font_id, blf_ROTATION)
         blf_rotation(font_id, 1.5707963267948966)
         y_loc = rh
@@ -741,12 +743,29 @@ def draw_callback_px(context):
             name = txt.name[:text_max_length]
             if text_max_length < len(txt.name):
                 name += '...'
-            blf_color(font_id, *segments[0]['col'][:3],
-                      (0.7 if txt.name == ce.in_tab else 0.4) * opac)
+            blf_color(font_id, *color, (0.7 if txt.name == ce.in_tab else 0.4) * opac)
             blf_position(font_id, ledge - round((tabw - ch) / 2.0) - 5,
                          round(y_loc - (tabh / 2) - cw * len(name) / 2), 0)
             blf_draw(font_id, name)
             y_loc -= tabh
+
+    # draw whitespace symbols
+    if show_ws:
+        wsc = "·"
+        blf_color(1, *color, 1 * ce.ws_alpha)
+        xoffset = wunits // 2
+        xoffset += (st.show_line_numbers and cw * len(repr(lenl))) or 0
+        start_y = rh - (lh * 0.8)
+
+        # truncate string beyond visible range
+        avail_chr = (lbound - xoffset) // cw
+
+        for idx, l in enumerate(text.lines[sttop:sttop + visl]):
+            wsstr = "".join(wsc if c in " " else " " for c in l.body)
+            if wsstr:
+                blf_position(1, xoffset, start_y, 0)
+                blf_draw(1, wsstr[:avail_chr])
+            start_y -= lh
 
     # restore opengl defaults
     bgl_glLineWidth(1.0)
@@ -892,6 +911,8 @@ class CodeEditorMain:
         self.mmlineh = ap.line_height
         self.block_trans = ap.block_trans
         self.indent_trans = ap.indent_trans
+        self.show_ws = ap.show_ws
+        self.ws_alpha = ap.ws_alpha
 
         # init params
         self.st = context.space_data
@@ -981,7 +1002,9 @@ def update_prefs(self, context):
         'block_trans': 'block_trans',
         'indent_trans': 'indent_trans',
         'opacity': 'bg_opacity',
-        'window_min_width': 'min_width'}
+        'window_min_width': 'min_width',
+        'show_ws': 'show_ws',
+        'ws_alpha': 'ws_alpha'}
     for editor in ce_manager.editors:
         for approp, edprop in propsdict.items():
             setattr(editor, edprop, getattr(self, approp))
@@ -999,6 +1022,18 @@ class CodeEditorPrefs(bpy.types.AddonPreferences):
         default=0.2,
         update=update_prefs)
 
+    show_ws: bpy.props.BoolProperty(
+        name="Show Whitespace Characters",
+        default=False,
+        update=update_prefs
+    )
+    ws_alpha: bpy.props.FloatProperty(
+        name="Whitespace Character Alpha",
+        min=0.0,
+        max=1.0,
+        default=0.2,
+        update=update_prefs
+    )
     show_tabs: bpy.props.BoolProperty(
         name="Show Tabs in Panel when multiple text blocks",
         description="Show opened textblock in tabs next to minimap",
@@ -1068,6 +1103,9 @@ class CodeEditorPrefs(bpy.types.AddonPreferences):
         row = layout.row(align=True)
         row.prop(self, "block_trans")
         row.prop(self, "indent_trans")
+        col = layout.column(align=True)
+        col.prop(self, "show_ws")
+        col.prop(self, "ws_alpha")
 
 
 classes = (
