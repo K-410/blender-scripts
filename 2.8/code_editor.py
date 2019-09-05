@@ -481,7 +481,6 @@ class MinimapEngine:
                     # dnumbers[idx].append(elems)
                     dnumbers[idx].append(elems)
 
-        # special_temp size keeps growing, fucking fix this
         # close all remaining blocks
         val = idx + 1 - blankl
         for entry in special_temp:
@@ -498,8 +497,6 @@ class MinimapEngine:
         output[6]['elements'] = dspecial  # XXX needs fixing
         output[7]['elements'] = dtabs
         ce.indents = indents
-        # t2 = perf_counter()
-        # print("highlighter:", round((t2 - t) * 1000, 2), "ms")
 
         self.ce.tag_redraw()
 
@@ -517,7 +514,6 @@ def get_cw(loc, firstx, lines):
 def draw_callback_px(context):
     """Draws Code Editors Minimap and indentation marks"""
     t = perf_counter()
-    # print("\n"*10)
     text = context.edit_text
 
     if not text:
@@ -556,7 +552,6 @@ def draw_callback_px(context):
 
     # char width
     cw = get_cw(loc, xstart, lines)
-    # cw = round(dpi_r * round(2 + 0.6 * (fs - 4)))                     # char width
     ch = round(dpi_r * round(2 + 1.3 * (fs - 2) + ((fs % 10) == 0)))  # char height
     sttop = st.top
     visl = st.visible_lines
@@ -578,9 +573,7 @@ def draw_callback_px(context):
     endrange = startrange + (rh // mlh)
     # update opacity for now
     ce.opacity = opac = min(max(0, (rw - ce.min_width) / 100.0), 1)
-
     x = ledge - tabw
-
     hash_curr = hash((*lines[startrange:endrange],))
 
     # rebuild visible range
@@ -640,7 +633,6 @@ def draw_callback_px(context):
         seq2_extend = seq2.extend
         yoffs = rh + slide
         color = (*segments[-2]['col'][:3], 0.3 * ce.block_trans * opac)
-
         mmapxoffs = ledge + 4
 
         # first absolute x value
@@ -669,13 +661,11 @@ def draw_callback_px(context):
                         if x >= firstx - 10:
                             seq2_extend(((x, ymin), (x, ymax)))
                             continue
-
         draw_lines_2d(seq2, color)
 
     bgl_glLineWidth(1.0 * dpi_r)
     # tab dividers
     if tabw and opac:
-        # ce.tab_height = tabh = min(200, int(rh / lent))
         y_loc = rh - 5
         for txt in texts:
         #     # tab selection
@@ -810,12 +800,6 @@ class CE_OT_scroll(CodeEditorBase, Operator):
         nlines = 0.333 * self.to_box_center / mlh
         bpy.ops.text.scroll(lines=round(nlines))
         return {'RUNNING_MODAL'}
-
-
-
-
-
-
 
         # st = context.space_data
         # ev, et = event.value, event.type
