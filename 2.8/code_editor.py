@@ -153,7 +153,6 @@ class CodeEditorManager(dict):
             pop = hsh.pop
             for i in range(lenl, lenp):
                 pop(i, None)
-
         return cache
 
     def gcollect(self, context):
@@ -175,7 +174,6 @@ class CodeEditorManager(dict):
             self[handle_id] = CodeEditorMain(context)
             self.editors.append(self[handle_id])
             return self[handle_id]
-
         return handle
 
 
@@ -267,7 +265,6 @@ class MinimapEngine:
         indents = c_indents             # indentation levels
         # indents = c_data['indents']    # indentation levels
 
-        blankl = 0
         # syntax element structure
         elem = [0,  # line id
                 0,  # element start position
@@ -290,7 +287,7 @@ class MinimapEngine:
         some_set = self.some_set
         some_set2 = self.some_set2
         ws = self.ws
-        idx = 0
+        blankl = idx = 0
         # flags of syntax state machine
         state = ""
         timer = -1      # timer to skip characters and close segment at t=0
@@ -323,17 +320,14 @@ class MinimapEngine:
         for idx, line in enumerate(text.lines[start:end], start):
             bod = line.body
             hsh = hash(bod)
-            if hsh == c_hash[idx]:
-                # use cached data instead
+            if hsh == c_hash[idx]:  # use cached data instead
                 continue
 
             c_hash[idx] = hsh
 
-            # TODO wrap into a function
-            for i in (dspecial, dplain, dnumbers,
+            for i in (dspecial, dplain, dnumbers,  # TODO wrap into a function
                       dstrings, dbuiltin, dcomments, dprepro):
                 i[idx].clear()
-
             # XXX tentative hack
             lenbstrip = len(bod.replace("#", " ").lstrip())
             lenb = len(bod)
@@ -343,8 +337,7 @@ class MinimapEngine:
                 ind = look_back(idx)
             indents[idx] = ind
 
-            # new line new element, carry string flag
-            elem[0] = idx
+            elem[0] = idx  # new line new element, carry string flag
             elem[1] = 0
             if state != 'STRING':
                 state = ""
@@ -352,7 +345,7 @@ class MinimapEngine:
             indent = 0
             block_close = has_non_ws = any(c not in ws for c in bod)
             enumbod = [*enumerate(bod)]
-            # process each line and break into syntax elements
+            # process each line and break into syntax blocks
             for cidx, c in enumbod:
                 bodsub = bod[cidx:]
                 start_tab = "    " in bodsub[:4]
@@ -510,12 +503,13 @@ def draw_callback_px(context):
 
     # get the correct ui scale
     wunits = get_widget_unit(context)
+    wu1 = wunits * 0.05
 
     mmw = round(ce.mmw * (wunits * 0.025))  # minimap width
     rw, rh = ce.region.width, ce.region.height
     redge = ce.redge = rw - wunits // 5 * 3  # x before scrollbar starts
     ledge = ce.ledge = rw - mmw if ce.show_minimap else redge
-    mcw = ce.mmcw * round(wunits * 0.05, 1)  # minimap char width
+    mcw = ce.mmcw * round(wu1, 1)  # minimap char width
 
     mlh = ce.mlh = ce.mlh_base * round(wunits * 0.1, 1)   # minimap line height
     st = context.space_data
@@ -523,7 +517,7 @@ def draw_callback_px(context):
     lines = text.lines
     show_lnr = st.show_line_numbers
 
-    lh = ce.lh = int((wunits * st.font_size // 20) * 1.3)  # line height
+    lh = int((wunits * st.font_size // 20) * 1.3)  # line height
     cw = get_cw(st, xstart, lines)  # char width
     sttop = st.top
     visl = st.visible_lines
@@ -532,11 +526,9 @@ def draw_callback_px(context):
     lenl = len(lines)
     lent = len(texts)
 
-    # px offset for first displayable character in editor area
-
     show_tabs = ce.show_tabs
     text_xoffset = wunits // 2 + show_lnr and cw * len(repr(lenl)) or 0
-    tabw = ce.tabw = int(wunits * 1.2) if (show_tabs and lent > 1) else 0
+    tabw = ce.tabw = show_tabs and lent > 1 and int(wunits * 1.2) or 0
     lbound = ledge - tabw if show_tabs and texts else ledge
     show_indents = ce.show_indents and not st.show_word_wrap
 
@@ -563,7 +555,7 @@ def draw_callback_px(context):
     draw_quads_2d(((x, rh), (redge, rh), (redge, 0), (x, 0)), color)
 
     # minimap shadow
-    bgl_glLineWidth(wunits * 0.05)
+    bgl_glLineWidth(wu1)
     x = ledge - tabw
     for idx, intensity in enumerate([.2, .1, .07, .05, .03, .02, .01]):
         color = 0.0, 0.0, 0.0, intensity * opac
@@ -585,11 +577,11 @@ def draw_callback_px(context):
         alpha = 0.1 if ce.in_minimap else 0.07
         color = 1.0, 1.0, 1.0, alpha * opac
         y2 = rh - mlh * sttopvisl + slide
-        seq = ((ledge, mapymin), (redge, mapymin), (redge, y2), (ledge, y2))
+        seq = (ledge, mapymin), (redge, mapymin), (redge, y2), (ledge, y2)
         draw_quads_2d(seq, color)
 
         # draw minimap code
-        bgl_glLineWidth((mlh ** 1.02) - 2)  # scale with line height
+        bgl_glLineWidth((mlh ** 1.02) - 2)  # scale blocks with line height
         for seg in segments:
             seq = deque()
             seq_extend = seq.extend
@@ -597,8 +589,7 @@ def draw_callback_px(context):
             for idx, elem in enumerate(seg['elements'][mmtop:mmbot]):
                 if elem:
                     y = rh - (mlh * (idx + mmtop + 1) - slide)
-                    for sub_element in elem:
-                        start, end = sub_element[:2]  # start/end indices
+                    for start, end, *_ in elem:
                         x1 = mmxoffs + (mcw * start)
                         if x1 > redge:
                             continue
@@ -622,7 +613,7 @@ def draw_callback_px(context):
     tab_width = st.tab_width
     indent = cw * tab_width
     mmapxoffs = ledge + 4  # x offset for minimap
-
+    ind_size = int(wunits * 0.15 * 0.5)
     # draw indent guides in the minimap
     for idx, levels in enumerate(ce.indents[mmtop:mmbot], mmtop):
         if levels:
@@ -637,7 +628,7 @@ def draw_callback_px(context):
                 if show_indents:
                     ymax = rh - lh * (1 + idx - sttop) + lh
                     ymin = ymax - lh
-                    bgl_glLineWidth(int(wunits * 0.15 * 0.5))
+                    bgl_glLineWidth(ind_size)
                     if -lh < ymin < rh:
                         x = xstart + indent * level
                         if x >= text_xoffset - 10:
@@ -646,15 +637,14 @@ def draw_callback_px(context):
     draw_lines_2d(seq1, color1)
     draw_lines_2d(seq2, color2)
 
-    bgl_glLineWidth(wunits * 0.05)
+    bgl_glLineWidth(wu1)
     # tab dividers
-    font_id = 0
     if tabw:
-        tabh = ce.tabh = min(200, int(rh / lent))  # text tab height
-        size = int((tabw * 0.6) / (wunits * 0.05))  # ratio to tab width
-        blf_size(font_id, int(tabw * 0.6), 72)
-        blf_enable(font_id, blf_ROTATION)
-        blf_rotation(font_id, 1.5707963267948966)
+        tabh = min(200, int(rh / lent))  # text tab height
+        size = int((tabw * 0.6) / wu1)  # ratio to tab width
+        blf_size(0, int(tabw * 0.6), 72)
+        blf_enable(0, blf_ROTATION)
+        blf_rotation(0, 1.5707963267948966)
         x = int(ledge - tabw / 3.5)
         yoffs = rh - (tabh / 2)
         maxlenn = round((tabh * 0.8) / (tabw * 0.5))
@@ -664,12 +654,11 @@ def draw_callback_px(context):
         for idx, name in enumerate(tnames):
             lenn = len(name)
             tlabel = lenn < maxlenn and name or name[:maxlenn] + '..'
-            alpha = name != text.name and 0.4 or 0.7
 
             y = round(yoffs - tabh * idx - (0.5 * size * len(tlabel) / 2))
-            blf_color(font_id, *plain_col, alpha * opac)
-            blf_position(font_id, x, y, 0)
-            blf_draw(font_id, tlabel)
+            blf_color(0, *plain_col, name != text.name and .4 or .7 * opac)
+            blf_position(0, x, y, 0)
+            blf_draw(0, tlabel)
 
         bgl_glEnable(bgl_GL_BLEND)  # not sure why it gets disabled
         # draw vertical tab rects
@@ -681,7 +670,6 @@ def draw_callback_px(context):
                 seq = (x, y), (ledge, y), (ledge, y - tabh), (x, y - tabh)
                 if ce.hover_text and ce.hover_text.name == name:
                     draw_quads_2d(seq, (1, 1, 1, 0.1))
-                    # color2 = 0, 0, 0, .4 * opac
                 # tab active
                 elif name == text.name:
                     ce.active_tab_ymax = y
@@ -691,26 +679,27 @@ def draw_callback_px(context):
 
     # draw whitespace characters
     if ce.show_whitespace and not st.show_word_wrap:
-        wsc = "·"
-        start_y = rh - (lh * 0.8)
+        cstart = (text_xoffset + (wunits // 2) - xstart) // cw
         cend = (lbound - text_xoffset) // cw
-        trunc = (text_xoffset + wunits // 2 - xstart) // xoffs
-        wsbod = ["".join(wsc if c in " " else " "
-                 for c in l.body[trunc:cend])
+        wsbod = ["".join("·" if c in " " else " "
+                 for c in l.body[cstart:cend])
                  for l in lines[sttop:sttopvisl]]
+
+        x = xstart + cstart * cw
+        y = rh - (lh * 0.8)
 
         blf_color(1, *plain_col, 1 * ce.ws_alpha)
         for idx, line in enumerate(wsbod):
             if line:
-                blf_position(1, xstart + (trunc * cw), start_y, 0)
+                blf_position(1, x, y, 0)
                 blf_draw(1, line)
-            start_y -= lh
+            y -= lh
 
     # restore opengl defaults
     bgl_glLineWidth(1.0)
     bgl_glDisable(bgl_GL_BLEND)
-    blf_rotation(font_id, 0)
-    blf_disable(font_id, blf_ROTATION)
+    blf_rotation(0, 0)
+    blf_disable(0, blf_ROTATION)
     # t2 = perf_counter()
     # print("draw:", round((t2 - t) * 1000, 2), "ms")
 
@@ -740,22 +729,29 @@ class CE_OT_scroll(CodeEditorBase, Operator):
         self.ce = get_handle(context)
         self.mlh = self.ce.mlh
         self.rh = self.ce.region.height
-        self.scroll = bpy.ops.text.scroll
+        st = context.space_data
+        self.lenl = len(st.text.lines)
 
         context.window.cursor_set('HAND')
         wm = context.window_manager
         wm.modal_handler_add(self)
-        self.timer = wm.event_timer_add(1e-3, window=context.window)
+        self.timer = wm.event_timer_add(75e-4, window=context.window)
         return self.scroll_timer(context, event)
 
     def scroll_timer(self, context, event):
         st = context.space_data
+        top = st.top
+        vishalf = st.visible_lines // 2
         mry = event.mouse_region_y
-        # box center in px
-        center = self.rh - self.mlh * (st.top + st.visible_lines / 2)
-        to_center = center + self.ce.slide - mry
-        nlines = 0.333 * to_center / self.mlh
-        self.scroll(lines=round(nlines))
+        mlh = self.mlh
+        lenl = self.lenl
+        center = self.rh - mlh * (top + vishalf)  # box center in px
+        nlines = round(0.3 * (center + self.ce.slide - mry) / mlh)
+        if nlines > 0 and top + nlines > lenl - vishalf:
+            val = lenl - vishalf
+        else:
+            val = top + round(((30 + (lenl / mlh)) / 60) * nlines)
+        st.top = val
         return {'RUNNING_MODAL'}
 
 
@@ -788,10 +784,34 @@ class CE_OT_mouse_move(CodeEditorBase, Operator):
     bl_idname = "ce.mouse_move"
     bl_label = "Mouse Move"
 
+    # return None so we don't block other keymaps
+    @classmethod
+    def poll(cls, context):
+        if getattr(context, 'edit_text', False):
+            ce = get_handle(context)
+            event = WM_OT_event_catcher(ce.window)
+            if event:
+                ce.update(context, event)
+
+
+# catch the event so it can be accessed outside of operators
+class WM_OT_event_catcher(bpy.types.Operator):
+    bl_idname = "wm.event_catcher"
+    bl_label = "Event Catcher"
+    bl_options = {'INTERNAL'}
+
+    from functools import partial
+
+    @staticmethod
+    def catch(window):
+        bpy.ops.wm.event_catcher({'window': window}, 'INVOKE_DEFAULT')
+
+    def __new__(cls, window):
+        bpy.app.timers.register(cls.partial(cls.catch, window))
+        return getattr(cls, 'event', None)
+
     def invoke(self, context, event):
-        ce = get_handle(context)
-        if ce:
-            ce.update(context, event)
+        __class__.event = event
         return {'CANCELLED'}
 
 
@@ -805,13 +825,13 @@ class CodeEditorMain:
         p = context.preferences
         ap = p.addons[__name__].preferences
         self.region = context.area.regions[-1]
+        self.window = context.window
         self.bg_opacity = ap.opacity
         self.show_tabs = ap.show_tabs
         self.mmw = ap.minimap_width
         self.min_width = ap.window_min_width
         self.mmcw = ap.character_width
-        self.mlh_base = ap.line_height
-        self.mlh = 1.5
+        self.mlh_base = self.mlh = ap.line_height
         self.indent_trans = ap.indent_trans
         self.show_whitespace = ap.show_whitespace
         self.show_minimap = ap.show_minimap
@@ -821,15 +841,12 @@ class CodeEditorMain:
         self.st = context.space_data
         self.in_minimap = False
         self.opac = min(max(0, (self.region.width - self.min_width) * .01), 1)
-        self.ledge = 0
         if self.show_minimap:
             self.ledge = self.region.width - round(self.mmw * (wunits * 0.025))
         self.redge = self.region.width - wunits // 5 * 3
-        self.tabw = int(wunits * 1.2) if self.show_tabs else 0
-        self.tabh = 200
-        self.active_tab_ymax = 0
-        self.in_tab = self.hover_text = self.hover_prev = None
-        self.text = text = context.edit_text
+        self.active_tab_ymax = self.ledge = self.tabw = 0
+        self.in_tab = self.hover_text = self.hover_prev = self.indents = None
+        self.text = context.edit_text
         self.texts = bpy.data.texts
         # get theme colors
         current_theme = p.themes.items()[0][0]
@@ -844,44 +861,46 @@ class CodeEditorMain:
                  tex_ed.syntax_special, (1, 0, 0))
 
         self.segments = [{'elements': [], 'col': i} for i in items]
-        self.indents = None
         self.tag_redraw = context.area.tag_redraw
 
         # claim a highlighter
         self.engine = MinimapEngine(self)
-        self.engine.highlight(bpy.data.texts[:].index(text))
+        self.engine.highlight(bpy.data.texts[:].index(self.text))
 
     # refresh the highlights
-    def update_text(self, text, delay=None):
+    def update_text(self, text):
         self.text = text
         tidx = bpy.data.texts[:].index(text)
         self.engine.highlight(tidx)
 
-    # determine the need to update drawing
-    # (hover highlight, minimap refresh, tab activation)
+    # (hover highlight, minimap refresh, tab activation, text change)
     def update(self, context, event):
         hover_text = None
         ledge = self.ledge
-        opac = self.opac
-        texts = self.texts
         tab_xmin = ledge - self.tabw
-        mrx, mry = event.mouse_region_x, event.mouse_region_y
-        lbound = tab_xmin if self.show_tabs and texts else ledge
-        text = context.edit_text
-        if text != self.text:  # update minimap if text has changed
-            self.update_text(text)
+        # use window coords since we can't guarantee the
+        # event object is assigned to the current region
+        mrx = event.mouse_x - context.region.x
+        mry = event.mouse_y - context.region.y
+        lbound = tab_xmin if self.show_tabs and self.texts else ledge
+
+        if context.edit_text != self.text:  # update minimap if text has changed
+            self.update_text(context.edit_text)
         if lbound <= mrx:
             context.window.cursor_set('DEFAULT')
-        # update minimap highlight when mouse in region
-        in_minimap = ledge <= mrx < self.redge and opac
+
+        # update minimap hover highlight
+        in_minimap = ledge <= mrx < self.redge and self.opac
         if in_minimap != self.in_minimap:
             self.in_minimap = in_minimap
             self.tag_redraw()
-        in_ttab = tab_xmin <= mrx < ledge and opac
+        in_ttab = tab_xmin <= mrx < ledge and self.opac
 
+        # update tab hover highlight
         if in_ttab:
+            texts = self.texts
             rh = self.region.height
-            tabh = self.tabh
+            tabh = min(200, int(rh / len(texts)))
             prev = 0
             for i in range(1, len(texts) + 1):
                 if mry in range(rh - (tabh * i), rh - prev):
@@ -891,7 +910,6 @@ class CodeEditorMain:
         if hover_text != self.hover_text:
             self.hover_text = hover_text
             self.tag_redraw()
-        #     context.window.cursor_set('DEFAULT')
         return {'CANCELLED'}  # prevent view layer update
 
 
@@ -901,7 +919,6 @@ def update_prefs(self, context):
         'show_tabs': 'show_tabs',
         'character_width': 'mmcw',
         'line_height': 'mlh_base',
-        # 'block_trans': 'block_trans',
         'indent_trans': 'indent_trans',
         'opacity': 'bg_opacity',
         'window_min_width': 'min_width',
@@ -1019,14 +1036,8 @@ classes = (
     CE_OT_mouse_move,
     CE_OT_cursor_set,
     CE_OT_scroll,
-    CE_PT_settings)
-
-
-def redraw_editors(context):
-    for w in context.window_manager.windows:
-        for a in w.screen.areas:
-            if a.type == 'TEXT_EDITOR':
-                a.tag_redraw()
+    CE_PT_settings,
+    WM_OT_event_catcher)
 
 
 def set_draw(state=True):
@@ -1035,21 +1046,20 @@ def set_draw(state=True):
     context = bpy.context
 
     if state:
-        if isinstance(context, _RestrictContext):
-            return bpy.app.timers.register(  # delay until context is freed
-                lambda: set_draw(state=state), first_interval=1e-3)
-        elif getattr(set_draw, '_handle', False):
-            pass  # remove handle instead
+        if isinstance(context, _RestrictContext):  # delay until context is freed
+            return bpy.app.timers.register(set_draw, first_interval=1e-3)
+                # lambda: set_draw(state=state), first_interval=1e-3)
         else:
-            setattr(set_draw, '_handle', st.draw_handler_add(
-                draw_callback_px, (context,), 'WINDOW', 'POST_PIXEL'))
-            return redraw_editors(context)
+            set_draw._handle = st.draw_handler_add(
+                draw_callback_px, (context,), 'WINDOW', 'POST_PIXEL')
+    else:
+        st.draw_handler_remove(set_draw._handle, 'WINDOW')
+        del set_draw._handle
 
-    handle = getattr(set_draw, '_handle', False)
-    if handle:
-        st.draw_handler_remove(handle, 'WINDOW')
-        delattr(set_draw, '_handle')
-        redraw_editors(context)
+    for w in context.window_manager.windows:
+        for a in w.screen.areas:
+            if a.type == 'TEXT_EDITOR':
+                a.tag_redraw()
 
 
 def register():
@@ -1060,20 +1070,13 @@ def register():
     bpy.types.TEXT_HT_header.append(CodeEditorPrefs.add_to_header)
     # bpy.types.TEXT_HT_footer.append(CodeEditorPrefs.add_to_header)
 
-    addon_keymaps = []
-    wm = bpy.context.window_manager
-    kc = wm.keyconfigs.addon
-    km = kc.keymaps.get('Text')
-    if not km:
-        km = kc.keymaps.new('Text', space_type='TEXT_EDITOR')
+    kc = bpy.context.window_manager.keyconfigs.addon.keymaps
+    km = kc.get('Text', kc.new('Text', space_type='TEXT_EDITOR'))
+    # needs to be before any other potentially blocking kmis
+    kmi1 = km.keymap_items.new('ce.mouse_move', 'MOUSEMOVE', 'ANY', head=True)
+    kmi2 = km.keymap_items.new('ce.cursor_set', 'LEFTMOUSE', 'PRESS')
 
-    kmi = km.keymap_items.new('ce.mouse_move', 'MOUSEMOVE', 'ANY')
-    addon_keymaps.append((km, kmi))
-
-    kmi = km.keymap_items.new('ce.cursor_set', 'LEFTMOUSE', 'PRESS')
-    addon_keymaps.append((km, kmi))
-
-    setattr(register, "addon_keymaps", addon_keymaps)
+    register.keymaps = ((km, kmi1), (km, kmi2))
     set_draw(getattr(bpy, "context"))
 
 
@@ -1081,13 +1084,9 @@ def unregister():
     set_draw(state=False)
     bpy.types.TEXT_HT_header.remove(CodeEditorPrefs.add_to_header)
 
-    addon_keymaps = getattr(register, 'addon_keymaps', False)
-    if addon_keymaps:
-        for km, kmi in addon_keymaps:
-            km.keymap_items.remove(kmi)
-    delattr(register, 'addon_keymaps')
-    del addon_keymaps
+    for km, kmi in register.keymaps:
+        km.keymap_items.remove(kmi)
+    del register.keymaps
 
-    from bpy.utils import unregister_class
     for cls in reversed(classes):
-        unregister_class(cls)
+        bpy.utils.unregister_class(cls)
