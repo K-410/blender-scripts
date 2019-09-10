@@ -28,7 +28,7 @@ from itertools import repeat
 
 bl_info = {
     "name": "Code Editor",
-    "location": "Text Editor > Righ Click Menu",
+    "location": "Text Editor > Right Click Menu",
     "version": (0, 1, 0),
     "blender": (2, 81, 0),
     "description": "Better editor for coding",
