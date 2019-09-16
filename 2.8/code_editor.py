@@ -586,8 +586,7 @@ def draw_callback_px(context):
     text_xoffset = wu3 + (cw * lnrs)
     mcw = ce.mmcw * round(wu2, 1)  # minimap char width
     maxw = 120 * wu2
-    # redge = ce.redge = 1 + int(int(rw - (0.2 * wu)) - (0.4 * wu))
-    redge = rw
+    redge = ce.redge = 1 + int(int(rw - (0.2 * wu)) - (0.4 * wu))
 
     # use different cache for wrapped. less performant, but still cached
     if word_wrap:
