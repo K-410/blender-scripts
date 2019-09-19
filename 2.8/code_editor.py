@@ -271,6 +271,45 @@ def get_widget_unit(context):
     return int((pd * 20 + 36) / 72 + (2 * (p - pd // 72)))
 
 
+# find all multi-line string states
+def get_ml_states(text):
+    ml_states = []
+    ranges = []
+    append = ml_states.append
+    pop = ml_states.pop
+    append2 = ranges.append
+    dbl, sgl = "\"\"\"", "\'\'\'"
+
+    for idx, line in enumerate(text.lines):
+
+        body = line.body
+        if "\"" in body or "\'" in body:
+
+            find = body.find
+            if dbl in body:
+                find = body.find
+                i = find(dbl, 0)
+                while i != -1:
+                    if ml_states and ml_states[-1][2] == dbl:
+                        append2(range(ml_states[0][0], idx))
+                        pop()
+                    else:
+                        append((idx, i, dbl))
+                    i = find(dbl, i + 1)
+
+            if sgl in body:
+                i = find(sgl, 0)
+                while i != -1:
+                    if ml_states and ml_states[-1][2] == sgl:
+                        append2(range(ml_states[0][0], idx))
+                        pop()
+                    else:
+                        append((idx, i, sgl))
+                    i = find(sgl, i + 1)
+
+    return ranges
+
+
 class MinimapEngine:
     __slots__ = ('ce')
 
@@ -304,10 +343,12 @@ class MinimapEngine:
         ce = self.ce
 
         if ce.word_wrap:
+            ml_states = []
             text = ce.wrap_text
             is_wrap = True
         else:
             text = texts[tidx]
+            ml_states = get_ml_states(text)
             is_wrap = False
 
         olines = texts[tidx].lines
@@ -356,6 +397,11 @@ class MinimapEngine:
         specials = self.specials
         special_temp.clear()
         tab_width = ce.st.tab_width
+
+        def is_ml_state(idx):
+            for r in ml_states:
+                if idx in r:
+                    return True
 
         def look_back(idx):
             prev = idx - 1
@@ -407,6 +453,12 @@ class MinimapEngine:
             if state != 'STRING' or is_sub and is_comment:
                 if not is_sub:
                     state = ""
+            _is_ml_state = is_ml_state(idx)
+
+            if _is_ml_state:
+                state = "STRING"
+            else:
+                state = ""
             indent = 0
             block_close = has_non_ws = any(c not in ws for c in bod)
             enumbod = [*enumerate(bod)]
@@ -448,8 +500,9 @@ class MinimapEngine:
                             state = 'NUMBER'
                         # "" string
                         elif c in '\"\'' and not is_sub:
-                            close_plain(elem, cidx)
-                            state = 'STRING'
+                            if not _is_ml_state:
+                                close_plain(elem, cidx)
+                                state = 'STRING'
                         # comment
                         elif c == '#':
                             close_plain(elem, cidx)
@@ -479,9 +532,6 @@ class MinimapEngine:
                         if is_sub and is_comment:
                             state = ""
                         else:
-                            if c in "\"\'":
-                                if '\\\\' not in bod[cidx - 1]:
-                                    timer = 0
                             if start_tab:
                                 elem[1] = cidx + 4
                                 indent += 4
