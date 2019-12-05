@@ -6,18 +6,14 @@ from itertools import chain
 from collections import deque
 # from time import perf_counter
 from bgl import glLineWidth, glEnable, glDisable, GL_BLEND
-from blf import (
-    # dimensions as blf_dimensions,
-    position as blf_position,
-    color as blf_color,
-    draw as blf_draw,)
+import blf
 
 bl_info = {
     "name": "Highlight Occurrences",
     "description": "Enables highlighting for words matching selected text",
     "author": "kaio",
     "version": (1, 0, 0),
-    "blender": (2, 81, 0),
+    "blender": (2, 82, 0),
     "location": "Text Editor",
     "category": "Text Editor"
 }
@@ -30,47 +26,45 @@ wrap_chars = {' ', '-'}
 p = None
 
 
-def clamp(top, lenl):
-    if -1 < top < lenl:
-        return top
-    if top < lenl:
-        return 0
-    return lenl - 1
-
-
-def get_matches_curl(substr, size, find, selr):
+def get_matches_curl(substr, strlen, find, selr):
     match_indices = []
     idx = find(substr, 0)
     exclude = range(*selr)
     append = match_indices.append
+
     while idx is not -1:
-        span = idx + size
+        span = idx + strlen
+
         if idx in exclude or span in exclude:
             idx = find(substr, idx + 1)
             continue
+
         append(idx)
         idx = find(substr, span)
+
     return match_indices
 
 
-def get_matches(substr, size, find):
+def get_matches(substr, strlen, find):
     match_indices = []
     append = match_indices.append
     chr_idx = find(substr, 0)
+
     while chr_idx is not -1:
         append(chr_idx)
-        chr_idx = find(substr, chr_idx + size)
+        chr_idx = find(substr, chr_idx + strlen)
+
     return match_indices
 
 
 def get_colors(draw_type):
     colors = {
-        'SCROLL': (p.scroll_col,),
-        'SOLID': (p.bg_col,),
-        'LINE': (p.line_col,),
-        'FRAME': (p.line_col,),
-        'SOLID_FRAME': (p.bg_col,
-                        p.line_col)}
+        'SCROLL': (p.col_scroll,),
+        'SOLID': (p.col_bg,),
+        'LINE': (p.col_line,),
+        'FRAME': (p.col_line,),
+        'SOLID_FRAME': (p.col_bg,
+                        p.col_line)}
     return colors[draw_type]
 
 
@@ -78,24 +72,19 @@ def draw_batches(context, batches, colors):
     glLineWidth(p.line_thickness)
     shader_bind()
     glEnable(GL_BLEND)
+
     for draw, col in zip(batches, colors):
         shader_uniform_float("color", [*col])
         draw(shader)
+
     glDisable(GL_BLEND)
 
 
 def update_colors(self, context):
-    col_attrs = ("bg_col", "fg_col", "line_col", 'scroll_col')
+    col_attrs = ("col_bg", "fg_col", "col_line", 'col_scroll')
     if self.col_preset != 'CUSTOM':
         for source, target in zip(self.colors[self.col_preset], col_attrs):
             setattr(self, target, source)
-
-
-def redraw(context):
-    for window in context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'TEXT_EDITOR':
-                area.tag_redraw()
 
 
 def to_tris(lineh, pts, y_ofs):
@@ -120,7 +109,7 @@ def to_lines(lineh, pts, y_ofs):
 def to_frames(lineh, pts, y_ofs):
     y1, y2 = Vector((-1, y_ofs)), Vector((-1, lineh + y_ofs))
     return (*iterchain(
-        [(a, b, ay, by, ay, a, by, b) for a, b, ay, by in
+        [(a, b, ay, by + Vector((1, 0)), ay, a, by, b) for a, b, ay, by in
             [(a + y1, b + y1, a + y2, b + y2) for a, b, _ in pts]]),)
 
 
@@ -132,123 +121,125 @@ batch_types = {
                     ('LINES', to_frames))}
 
 
-def get_y_offset(rh, lineh, fs, yco):
-    rh_min_1 = rh - lineh
-    rh_min_2 = rh - (lineh * 2)
-    for y_ref in yco:
-        if rh_min_1 >= y_ref >= rh_min_2:
-            return rh_min_1 - y_ref
-    return lineh / fs
-
-
+# Find character width
 def get_cw(loc, firstx, lines):
     for idx, line in enumerate(lines):
         if len(line.body) > 1:
             return loc(idx, 1)[0] - firstx
 
 
-def get_non_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
-    scrollpts = []
-    scr_append = scrollpts.append
+# Find all occurrences and generate points to draw rects
+def get_non_wrapped_pts(context, substr, selr, lineh, wunits):
     pts = []
+    scrollpts = []
     append = pts.append
+
+    st = context.space_data
+    txt = st.text
     top = st.top
     lines = txt.lines
-    size = len(substr)
-    region = bpy.context.area.regions[-1]
-    rw = region.width
-    rh = region.height
+    curl = txt.current_line
+    strlen = len(substr)
     loc = st.region_location_from_cursor
+
     firstxy = loc(0, 0)
-    maxy = firstxy[1]
-    cw = get_cw(loc, firstxy[0], lines)
-    cspan = cw * size
-    yco = range(loc(top, 0)[1], -lineh, -lineh)
-    y_offset = get_y_offset(region.height, lineh, st.font_size, yco)
-    xoffset += (st.show_line_numbers and cw * len(repr(len(lines)))) or 0
-    top, pxspan, miny = calc_top(top, maxy, len(st.text.lines), loc, lines, lineh, rh)
-    viewmax = rw - (wunits // 2)
+    x_offset = cw = get_cw(loc, firstxy[0], lines)
+    str_span_px = cw * strlen
+
+    if st.show_line_numbers:
+        x_offset += cw * (len(repr(len(lines))) + 2)
+
+    # Vertical span in pixels
+    lenl = len(st.text.lines)
+    vspan_px = lineh
+    if lenl > 1:
+        vspan_px = abs(firstxy[1] - loc(lenl - 1, len(lines[-1].body))[1])
+
+    region = context.region
+    rw, rh = region.width, region.height
+    hor_max_px = rw - (wunits // 2)
     if p.show_in_scroll:
-        get_scroll_pts(st, substr, scr_append, wunits, pxspan, region, lineh)
+        args = st, substr, wunits, vspan_px, rw, rh, lineh
+        scrollpts = scrollpts_get(*args)
 
     for idx, line in enumerate(lines[top:top + st.visible_lines + 2], top):
-        bod = line.body
-        find = bod.lower().find if not p.case else bod.find
+        body = line.body
+        find = body.lower().find if not p.case_sensitive else body.find
         if line == curl:
-            match_indices = get_matches_curl(substr, size, find, selr)
+            match_indices = get_matches_curl(substr, strlen, find, selr)
         else:
-            match_indices = get_matches(substr, size, find)
+            match_indices = get_matches(substr, strlen, find)
 
-        if len(match_indices) > 100:
-            return pts, y_offset
+        if len(match_indices) > 1000:
+            return pts, scrollpts
 
-        for midx in match_indices:
-            x1, y1 = loc(idx, midx)
-            x2 = x1 + cspan
-            if x1 > viewmax or x2 <= xoffset:
+        for match_idx in match_indices:
+            x1, y1 = loc(idx, match_idx)
+            x2 = x1 + str_span_px
+            if x1 > hor_max_px or x2 <= x_offset:
                 continue
 
-            cofs = (xoffset - x1) // cw if x1 < xoffset else 0
-            c2 = midx + size
-            c2 -= 1 + (x2 - viewmax) // cw if x2 > viewmax else 0
+            char_offset = (x_offset - x1) // cw if x1 < x_offset else 0
+            end_idx = match_idx + strlen
+            end_idx -= 1 + (x2 - hor_max_px) // cw if x2 > hor_max_px else 0
 
-            append((Vector((x1 + cw * cofs, y1)),
+            append((Vector((x1 + cw * char_offset, y1)),
                     Vector((x2, y1)),
-                    bod[midx + cofs:c2]))
+                    body[match_idx + char_offset:end_idx]))
 
-    return pts, scrollpts, y_offset
-
-
-def calc_top(top, maxy, lenl, loc, lines, lineh, rh):
-
-    # this can probably be more efficient
-    #
-    # we don't need to find the last
-    # line if top is above half of lenl
-
-    miny = 0
-    if lenl > 1:
-        miny = loc(lenl - 1, len(lines[-1].body))[1]
-        dif = abs(maxy - miny)
-        top = round(lenl - (dif * (rh - miny) / dif) / (dif / lenl)) + 2
-    else:
-        dif = lineh
-    top = clamp(top, lenl)
-    rhmin = rh - (lineh * 2)
-    y = loc(top, len(lines[top].body))[1]
-
-    while y < rhmin:
-        if top < 1:
-            break
-        top -= 1
-        y = loc(top, 0)[1]
-
-    return clamp(top, lenl), dif, miny
+    return pts, scrollpts
 
 
-def indexof(lines, line, lenl, top=0):
-    line_hash = hash(line)
-    for idx, l in enumerate(lines):
-        if hash(l) == line_hash:
-            return idx
+# Calculate true top and pixel span when word wrap is turned on
+def calc_top(lines, maxy, lineh, rh, yoffs, char_max):
+    top = 0
+    found = False
+    wrap_offset = maxy + yoffs
+    wrap_span_px = -lineh
+    if char_max < 8:
+        char_max = 8
+    for idx, line in enumerate(lines):
+        wrap_span_px += lineh
+        if wrap_offset < rh:
+            if not found:
+                found = True
+                top = idx
+        wrap_offset -= lineh
+        pos = start = 0
+        end = char_max
+
+        body = line.body
+        if len(body) < char_max:
+            continue
+
+        for c in body:
+            if pos - start >= char_max:
+                wrap_span_px += lineh
+                if wrap_offset < rh:
+                    if not found:
+                        found = True
+                        top = idx
+                wrap_offset -= lineh
+                start = end
+                end += char_max
+            elif c is " " or c is "-":
+                end = pos + 1
+            pos += 1
+    return top, wrap_span_px
 
 
-def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
+# Find all occurrences and display as lines on scrollbar
+def scrollpts_get(st, substr, wu, vspan_px, rw, rh, lineh):
+    scrollpts = []
+    append = scrollpts.append
     top_margin = int(0.4 * wu)
 
     # x offset for scrollbar widget start
-    sx_2 = int(region.width - 0.2 * wu)
+    sx_2 = int(rw - 0.2 * wu)
     sx_1 = sx_2 - top_margin + 2
-    pxavail = region.height - top_margin * 2
-    wrh = wrhorg = (pxspan // lineh) + 1  # wrap lines
-    # wrh = pxspan // lineh + 1  # wrap height in lines
-    # endl_idx = indexof(lines, txt.select_end_line, lenl, top)
-    # current line position with wrap offset
-    # curlwofs = abs(maxy - loc(txt.current_line_index, 0)[1]) / lineh
-    # sellwofs = abs(maxy - loc(endl_idx, 0)[1]) / lineh
-    # scrollmax = abs(maxy - maxy) / lineh
-    # scrollmin = abs(maxy - miny) / lineh
-    scrolltop = region.height - (top_margin + 2)
+    pxavail = rh - top_margin * 2
+    wrh = wrhorg = (vspan_px // lineh) + 1  # wrap lines
+    scrolltop = rh - (top_margin + 2)
 
     vispan = st.top + st.visible_lines
     blank_lines = st.visible_lines // 2
@@ -256,204 +247,157 @@ def get_scroll_pts(st, substr, append, wu, pxspan, region, lineh):
         blank_lines = vispan - wrh
 
     wrh += blank_lines
-    # barh = int((vis * pxavail) / wrh) if wrh > 0 else 0
-    # pxdif = 0
-
-    # if barh < 20:
-    #     pxdif, barh = 20 - barh, 20
-
-    # pxmrg = pxavail - pxdif
-    # if wrh > 0:
-    #     bar1 = int((pxmrg * stp) / wrh)
-    # else:
-    #     bar1 = barh = 0
     j = 2 + wrhorg / len(st.text.lines) * pxavail
     for i, line in enumerate(st.text.lines, 1):
-        bod = line.body.lower() if not p.case else line.body
-        if substr in bod:
+        body = line.body.lower() if not p.case_sensitive else line.body
+        if substr in body:
             y = scrolltop - i * j // wrh
             append((Vector((sx_1, y)), Vector((sx_2, y))))
-
-    # barspan = bar1 + barh
-    # lhl1, lhl2 = sorted((curlwofs, sellwofs))
-    # hl1 = (lhl1 * pxavail) // wrh
-    # hl2 = (lhl2 * pxavail) // wrh
-
-    # if pxdif > 0:
-    #     if lhl1 >= stp and lhl1 <= vispan:
-    #         hl1 = int(((pxmrg * lhl1) / wrh) +
-    #                     (pxdif * (lhl1 - stp) / vis))
-    #     elif lhl1 > vispan and hl1 < barspan and hl1 > bar1:
-    #         hl1 = barspan
-    #     elif lhl2 > stp and lhl1 < stp and hl1 > bar1:
-    #         hl1 = bar1
-    #     if hl2 <= hl1:
-    #         hl2 = hl1 + 2
-    #     if lhl2 >= stp and lhl2 <= vispan:
-    #         hl2 = int(((pxmrg * lhl2) / wrh) +
-    #                     (pxdif * (lhl2 - stp) / vis))
-    #     elif lhl2 < stp and hl2 >= bar1 - 2 and hl2 < barspan:
-    #         hl2 = bar1
-    #     elif lhl2 > vispan and lhl1 < stp + vis and hl2 < barspan:
-    #         hl2 = barspan
-    #     if hl2 <= hl1:
-    #         hl1 = hl2 - 2
-    # if hl2 - hl1 < 2:
-    #     hl2 = int(hl1 + 2)
-
-    # keep as reference
-
-    # hlstart = (scrollmax * pxavail) // wrh
-    # hlend = (scrollmin * pxavail) // wrh
-    # sy_2 = scrolltop - 3
-    # sy_1 = sy_2 - hlend
-    # scr_append((Vector((sx_1, sy_2)), Vector((sx_2, sy_2)), ""))
-    # scr_append((Vector((sx_1, sy_1)), Vector((sx_2, sy_1)), ""))
-
-    # hlminy = scrolltop - hl2 - 1
-    # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy))))
-    # scr_append((Vector((sx_1, hlminy)), Vector((sx_2, hlminy)), ""))
+    return scrollpts
 
 
-def get_wrapped_pts(st, txt, curl, substr, selr, lineh, wunits, xoffset):
+def get_wrapped_pts(context, substr, selr, lineh, wunits):
+    # t = perf_counter()
 
-    loc = st.region_location_from_cursor
     pts = []
+    scrollpts = []
     append = pts.append
 
-    scrollpts = []
-    scr_append = scrollpts.append
-
+    st = context.space_data
+    txt = st.text
     lines = txt.lines
+    curl = txt.current_line
     lenl = len(lines)
-    region = bpy.context.area.regions[-1]
 
+    loc = st.region_location_from_cursor
     firstxy = loc(0, 0)
-    maxy = firstxy[1]
-    cw = get_cw(loc, firstxy[0], lines)
+    x_offset = cw = get_cw(loc, firstxy[0], lines)
+
+    if st.show_line_numbers:
+        x_offset += cw * (len(repr(lenl)) + 2)
+
+    region = context.region
     rh, rw = region.height, region.width
-    # rlimit = ry + rh
-    fs = st.font_size
+    # Maximum displayable characters in editor
+    char_max = (rw - wunits - x_offset) // cw
+    if char_max < 8:
+        char_max = 8
 
-    # add to x offset for text when line numbers are visible
-    xoffset += (st.show_line_numbers and cw * len(repr(lenl))) or 0
+    line_height_dpi = int((wunits * st.font_size) / 20)
+    y_offset = int(line_height_dpi * 0.3)
+    top, vspan_px = calc_top(lines, firstxy[1], lineh, rh, y_offset, char_max)
+    strlen = len(substr)
 
-    # maximum displayable characters in editor
-    cmax = (rw - wunits - xoffset) // cw
-    if cmax < 8:
-        cmax = 8
+    # Screen coord tables for fast lookup of match positions
+    x_table = range(0, cw * char_max, cw)
+    y_top = loc(top, 0)[1]
+    y_table = range(y_top, y_top - vspan_px, -lineh)
+    y_table_size = len(y_table)
 
-    # estimate top by comparing coords of first / last line
-    stp = st.top
-    top, pxspan, miny = calc_top(stp, maxy, lenl, loc, lines, lineh, rh)
-    size = len(substr)
+    wrap_total = w_count = wrap_offset = 0
 
-    vis = st.visible_lines
-    yco = range(loc(top, 0)[1], -100000, -lineh)
-    xco = range(0, cw * cmax, cw)
-    tsize = len(yco)
-    y_offset = get_y_offset(rh, lineh, fs, yco)
+    # Generate points for scrollbar highlights
+    # if p.show_in_scroll:
     if p.show_in_scroll:
-        get_scroll_pts(st, substr, scr_append, wunits, pxspan, region, lineh)
+        args = st, substr, wunits, vspan_px, rw, rh, lineh
+        scrollpts = scrollpts_get(*args)
 
-    totwrap = wrap = woffset = 0
-    for l_idx, line in enumerate(lines[top:top + vis + 4], top):
-        bod = line.body
-        find = bod.lower().find if not p.case else bod.find
+    # Generate points for text highlights
+    for l_idx, line in enumerate(lines[top:top + st.visible_lines + 4], top):
+        body = line.body
+        find = body.lower().find if not p.case_sensitive else body.find
+
         if line == curl:
-            match_indices = get_matches_curl(substr, size, find, selr)
+            # Selected line is processed separately
+            match_indices = get_matches_curl(substr, strlen, find, selr)
         else:
-            match_indices = get_matches(substr, size, find)
+            match_indices = get_matches(substr, strlen, find)
 
-        if len(match_indices) > 100:
-            return pts, y_offset
+        # Hard max for match finding
+        if len(match_indices) > 1000:
+            return pts, scrollpts
 
-        wlist = []
-        wappend = wlist.append
-        wstart = 0
-        wend = cmax  # wrap cut-off
-        wrap = -1
+        # Wraps
+        w_list = []
+        w_start = 0
+        w_end = char_max
+        w_count = -1
         coords = deque()
-        extend = coords.extend
 
-        # simulate word-wrapping only,
-        # but keep track of wrap indices
-        for idx, char in enumerate(bod):
-            if idx - wstart >= cmax:
-                wappend(bod[wstart:wend])
-                wrap += 1
-                extend([(i, wrap) for i in range(wend - wstart)])
-                wstart = wend
-                wend += cmax
+        # Simulate word wrapping for displayed text and store
+        # local text coordinates and wrap indices for each line.
+        for idx, char in enumerate(body):
+            if idx - w_start >= char_max:
+                w_list.append(body[w_start:w_end])
+                w_count += 1
+                coords.extend([(i, w_count) for i in range(w_end - w_start)])
+                w_start = w_end
+                w_end += char_max
             elif char in wrap_chars:
-                wend = idx + 1
+                w_end = idx + 1
 
-        wappend(bod[wstart:])
-        wend = wstart + (len(bod) - wstart)
-        wrap += 1
-        extend([(i, wrap) for i in range(wend - wstart)])
-        wrap_indices = [i for i, _ in enumerate(wlist) for _ in _]
-
-        # if match_indices:
-        #     print(top, l_idx + wrap)
-        # wrap_offset_idx.append(l_idx + wrap - 1)
+        w_list.append(body[w_start:])
+        w_end = w_start + (len(body) - w_start)
+        w_count += 1
+        coords.extend([(i, w_count) for i in range(w_end - w_start)])
+        w_indices = [i for i, _ in enumerate(w_list) for _ in _]
 
         # screen coords for wrapped char/line by match index
         for match_idx in match_indices:
-            mspan = match_idx + size
+            mspan = match_idx + strlen
 
-            wrapc, wrapl = coords[match_idx]
-            wrapc_end, wrapl_end = coords[mspan - 1]
-            # print(wrapc_end, wrapl_end)
+            w_char, w_line = coords[match_idx]
+            w_char_end, w_line_end = coords[mspan - 1]
 
             # in edge cases where a single wrapped line has
             # several thousands of matches, skip and continue
-            if wrapl > tsize or wrapl_end > tsize:
+            if w_line > y_table_size or w_line_end > y_table_size:
                 continue
 
-            matchy = yco[wrapl] - woffset
-            # if matchy > rlimit or matchy < -lineh:
+            matchy = y_table[w_line] - wrap_offset
             if matchy > rh or matchy < -lineh:
                 continue
 
-            co_1 = Vector((xoffset + xco[wrapc], matchy))
+            co_1 = Vector((x_offset + x_table[w_char], matchy))
 
-            if wrapl != wrapl_end:
+            if w_line != w_line_end:
                 start = match_idx
                 end = wrap_idx = 0
 
-                for midx in range(size):
+                for midx in range(strlen):
                     widx = match_idx + midx
-                    wrapc, wrapl = coords[widx]
-                    matchy = yco[wrapl] - woffset
+                    w_char, w_line = coords[widx]
+                    matchy = y_table[w_line] - wrap_offset
 
                     if matchy != co_1.y:
-                        co_2 = Vector((xco[wrapc - 1] + cw + xoffset,
-                                       yco[wrapl - 1] - woffset))
+                        co_2 = Vector((x_table[w_char - 1] + cw + x_offset,
+                                       y_table[w_line - 1] - wrap_offset))
 
                         if wrap_idx:
-                            text = wlist[wrap_indices[widx - 1]]
+                            text = w_list[w_indices[widx - 1]]
                         else:
-                            text = bod[start:widx]
+                            text = body[start:widx]
                         append((co_1, co_2, text))
-                        co_1 = Vector((xoffset + xco[wrapc], matchy))
+                        co_1 = Vector((x_offset + x_table[w_char], matchy))
                         end = midx
                         start += end
                         wrap_idx += 1
                         continue
-                text = bod[match_idx:mspan][end:]
-                co_2 = Vector((xoffset + xco[wrapc] + cw, matchy))
+                text = body[match_idx:mspan][end:]
+                co_2 = Vector((x_offset + x_table[w_char] + cw, matchy))
                 append((co_1, co_2, text))
 
             else:
-                text = bod[match_idx:mspan]
+                text = body[match_idx:mspan]
                 co_2 = co_1.copy()
-                co_2.x += cw * size
+                co_2.x += cw * strlen
                 append((co_1, co_2, text))
 
-        totwrap += wrap + 1
-        woffset = lineh * totwrap
-    return pts, scrollpts, y_offset
+        wrap_total += w_count + 1
+        wrap_offset = lineh * wrap_total
+    # t2 = perf_counter()
+    # print("draw:", round((t2 - t) * 1000, 2), "ms")
+    return pts, scrollpts
 
 
 # for calculating offsets and max displayable characters
@@ -466,188 +410,220 @@ def get_widget_unit(context):
 
 
 def draw_highlights(context):
+    # t = perf_counter()
     st = context.space_data
     txt = st.text
+
     if not txt:
         return
+
     selr = sorted((txt.current_character, txt.select_end_character))
     curl = txt.current_line
     substr = curl.body[slice(*selr)]
+
     if not substr.strip():
+        # Nothing to find
         return
-    if not p.case:
+
+    if not p.case_sensitive:
         substr = substr.lower()
 
     if len(substr) >= p.min_str_len and curl == txt.select_end_line:
         wunits = get_widget_unit(context)
-        lh_dpi = (wunits * st.font_size) // 20
-        lh = lh_dpi + int(0.3 * lh_dpi)
-        xoffset = wunits // 2
+        line_height_dpi = (wunits * st.font_size) / 20
+        line_height = int(line_height_dpi + 0.3 * line_height_dpi)
         draw_type = p.draw_type
-        args = st, txt, curl, substr, selr, lh, wunits, xoffset
-        if st.show_word_wrap:
-            pts, scrollpts, y_ofs = get_wrapped_pts(*args)
-        else:
-            pts, scrollpts, y_ofs = get_non_wrapped_pts(*args)
+        args = context, substr, selr, line_height, wunits
 
-        scroll_tris = to_scroll(lh, scrollpts, 2)
+        if st.show_word_wrap:
+            pts, scrollpts = get_wrapped_pts(*args)
+        else:
+            pts, scrollpts = get_non_wrapped_pts(*args)
+
+        y_offset = round(line_height_dpi * 0.3)
+
+        scroll_tris = to_scroll(line_height, scrollpts, 2)
         scroll_batch = [batch_for_shader(
-            shader, 'TRIS', {'pos': scroll_tris}).draw]
+                        shader, 'TRIS', {'pos': scroll_tris}).draw]
         draw_batches(context, scroll_batch, get_colors('SCROLL'))
 
         batches = [batch_for_shader(
-                   shader, btyp, {'pos': fn(lh, pts, y_ofs)}).draw
+                   shader, btyp, {'pos': fn(line_height, pts, y_offset)}).draw
                    for b in batch_types[draw_type] for (btyp, fn) in [b]]
-        draw_batches(context, batches + scroll_batch, get_colors(draw_type))
 
+        draw_batches(context, batches, get_colors(draw_type))
+
+        y_offset += int(line_height_dpi * 0.3)
         # highlight font overlay starts here
         fontid = 1
-        blf_color(fontid, *p.fg_col)
+        blf.color(fontid, *p.fg_col)
         for co, _, substring in pts:
-            co.y += xoffset
-            blf_position(fontid, *co, 1)
-            blf_draw(fontid, substring)
+            co.y += y_offset
+            blf.position(fontid, *co, 1)
+            blf.draw(fontid, substring)
+    # t2 = perf_counter()
+    # print("draw:", round((t2 - t) * 1000, 2), "ms")
+
+
+def _disable(context, st, prefs):
+    handle = getattr(prefs, "_handle", None)
+    if handle:
+        st.draw_handler_remove(handle, 'WINDOW')
+        redraw(context)
+        del prefs._handle
 
 
 def update_highlight(self, context):
-    if self.enable:
-        bpy.app.timers.register(
-            lambda: setattr(
-                HighlightOccurrencesPrefs,
-                "handler",
-                bpy.types.SpaceTextEditor.draw_handler_add(
-                    draw_highlights,
-                    (bpy.context,),
-                    'WINDOW', 'POST_PIXEL')) or
-                redraw(bpy.context))
+    prefs = HighlightOccurrencesPrefs
+    st = bpy.types.SpaceTextEditor
+    _disable(context, st, prefs)
+    if not self.enable:
         return
 
-    elif hasattr(HighlightOccurrencesPrefs, "handler"):
-        try:
-            bpy.types.SpaceTextEditor.draw_handler_remove(
-                HighlightOccurrencesPrefs.handler, 'WINDOW')
-        except ValueError:
-            pass
+    args = draw_highlights, (context,), 'WINDOW', 'POST_PIXEL'
+    bpy.app.timers.register(lambda: setattr(prefs, "_handle",
+                            st.draw_handler_add(*args)), first_interval=0)
 
 
 class HighlightOccurrencesPrefs(bpy.types.AddonPreferences):
     bl_idname = __name__
-    from bpy.props import (
-        BoolProperty,
-        FloatVectorProperty,
-        EnumProperty,
-        IntProperty,
-        FloatProperty)
 
     colors = {
-        "BLUE": (
-            (.25, .33, .45, 1),
-            (1, 1, 1, 1),
-            (.18, .44, .61, 1),
-            (0.14, .6, 1, .55)),
-        "YELLOW": (
-            (.39, .38, .07, 1),
-            (1, 1, 1, 1),
-            (.46, .46, 0, 1),
-            (1, .79, .09, .4)),
-        "GREEN": (
-            (.24, .39, .26, 1),
-            (1, 1, 1, 1),
-            (.2, .5, .19, 1),
-            (.04, 1., .008, .4)),
-        "RED": (
-            (.58, .21, .21, 1),
-            (1, 1, 1, 1),
-            (.64, .27, .27, 1),
-            (1, 0.21, .21, 0.5))}
+        "BLUE": ((.25, .33, .45, 1),
+                 (1, 1, 1, 1),
+                 (.18, .44, .61, 1),
+                 (0.14, .6, 1, .55)),
 
-    enable: BoolProperty(
-        name="Highlight Occurrences", description="Enable highlighting",
-        default=True, update=update_highlight)
+        "YELLOW": ((.39, .38, .07, 1),
+                   (1, 1, 1, 1),
+                   (.46, .46, 0, 1),
+                   (1, .79, .09, .4)),
 
-    line_thickness: IntProperty(default=2, name="Line Thickness", min=1, max=4)
-    show_in_scroll: BoolProperty(
-        name="Show in Scrollbar", default=True,
-        description="Show highlights in scrollbar")
+        "GREEN": ((.24, .39, .26, 1),
+                  (1, 1, 1, 1),
+                  (.2, .5, .19, 1),
+                  (.04, 1., .008, .4)),
 
-    min_str_len: IntProperty(
-        description='Skip finding occurrences below this number', default=2,
-        name='Minimum Search Length', min=1, max=4)
+        "RED": ((.58, .21, .21, 1),
+                (1, 1, 1, 1),
+                (.64, .27, .27, 1),
+                (1, 0.21, .21, 0.5))
+    }
 
-    case: BoolProperty(
-        description='Highlight identical matches only', default=False,
-        name='Case Sensitive',)
+    from bpy.props import (BoolProperty, FloatVectorProperty, EnumProperty,
+                           IntProperty, FloatProperty)
 
-    bg_col: FloatVectorProperty(
-        description='Background color', default=colors['BLUE'][0],
-        name='Background', subtype='COLOR', size=4, min=0, max=1)
+    enable: BoolProperty(description="Enable highlighting",
+                         name="Highlight Occurrences",
+                         default=True,
+                         update=update_highlight)
 
-    line_col: FloatVectorProperty(
-        description='Line and frame color', subtype='COLOR', size=4,
-        default=colors['BLUE'][2], name='Line / Frame', min=0, max=1)
+    line_thickness: IntProperty(description="Line Thickness",
+                                default=1,
+                                name="Line Thickness",
+                                min=1,
+                                max=4)
 
-    fg_col: FloatVectorProperty(
-        description='Foreground color', name='Foreground', size=4, min=0,
-        default=colors['BLUE'][1], subtype='COLOR', max=1)
+    show_in_scroll: BoolProperty(description="Show in scrollbar",
+                                 name="Show in Scrollbar",
+                                 default=True)
 
-    scroll_col: FloatVectorProperty(
-        description="Opacity for scrollbar highlights", name="Scrollbar",
-        size=4, min=0, max=1, default=colors['BLUE'][3], subtype='COLOR')
+    min_str_len: IntProperty(description="Don't search below this",
+                             name='Minimum Search Length',
+                             default=2,
+                             min=1,
+                             max=4)
 
-    draw_type: EnumProperty(
-        description="Draw type for highlights",
-        default="SOLID_FRAME", name="Draw Type",
-        items=(
-            ("SOLID", "Solid", "", 1),
-            ("LINE", "Line", "", 2),
-            ("FRAME", "Frame", "", 3),
-            ("SOLID_FRAME", "Solid + Frame", "", 4)))
+    case_sensitive: BoolProperty(description='Case Sensitive Matching',
+                                 name='Case Sensitive',
+                                 default=False)
 
-    col_preset: EnumProperty(
-        description="Highlight color presets",
-        default="BLUE", name="Presets",
-        update=update_colors,
-        items=(
-            ("BLUE", "Blue", "", 1),
-            ("YELLOW", "Yellow", "", 2),
-            ("GREEN", "Green", "", 3),
-            ("RED", "Red", "", 4),
-            ("CUSTOM", "Custom", "", 5)))
+    col_bg: FloatVectorProperty(description='Background color',
+                                name='Background',
+                                default=colors['BLUE'][0],
+                                subtype='COLOR',
+                                size=4,
+                                min=0,
+                                max=1)
+
+    col_line: FloatVectorProperty(description='Line and frame color',
+                                  name='Line / Frame',
+                                  default=colors['BLUE'][2],
+                                  subtype='COLOR',
+                                  size=4,
+                                  min=0,
+                                  max=1)
+
+    fg_col: FloatVectorProperty(description='Foreground color',
+                                name='Foreground',
+                                default=colors['BLUE'][1],
+                                size=4,
+                                min=0,
+                                subtype='COLOR',
+                                max=1)
+
+    col_scroll: FloatVectorProperty(description="Scroll highlight opacity",
+                                    name="Scrollbar",
+                                    default=colors['BLUE'][3],
+                                    size=4,
+                                    min=0,
+                                    max=1,
+                                    subtype='COLOR')
+
+    draw_type: EnumProperty(description="Draw type for highlights",
+                            name="Draw Type",
+                            default="SOLID_FRAME",
+                            items=(("SOLID", "Solid", "", 1),
+                                   ("LINE", "Line", "", 2),
+                                   ("FRAME", "Frame", "", 3),
+                                   ("SOLID_FRAME", "Solid + Frame", "", 4)))
+
+    col_preset: EnumProperty(description="Highlight color presets",
+                             default="BLUE", name="Presets",
+                             update=update_colors,
+                             items=(("BLUE", "Blue", "", 1),
+                                    ("YELLOW", "Yellow", "", 2),
+                                    ("GREEN", "Green", "", 3),
+                                    ("RED", "Red", "", 4),
+                                    ("CUSTOM", "Custom", "", 5)))
+
+    del (BoolProperty, FloatVectorProperty,
+         EnumProperty, IntProperty, FloatProperty)
 
     def draw(self, context):
-        lines_only = self.draw_type in {'LINE', 'FRAME', 'SOLID_FRAME'}
         layout = self.layout
 
         split = layout.split()
-        col = split.column()
-        col.prop(self, "show_in_scroll")
-        col.prop(self, "case")
-        col.prop(self, "min_str_len")
+        prop = split.column().prop
+        for item in ["show_in_scroll", "case_sensitive", "min_str_len"]:
+            prop(self, item)
+
         split.column()
+
         split = layout.split()
         col = split.column()
+
         split.column()
         col.prop(self, "line_thickness")
-        col.enabled = lines_only
-        row = layout.row()
-        row.prop(self, "draw_type", expand=True)
-        grid = layout.grid_flow(align=True)
-        grid.prop(self, "col_preset", expand=True)
+        col.enabled = self.draw_type in {'LINE', 'FRAME', 'SOLID_FRAME'}
+        layout.row().prop(self, "draw_type", expand=True)
+        layout.grid_flow(align=True).prop(self, "col_preset", expand=True)
+
         if self.col_preset == 'CUSTOM':
-            col = layout.column()
-            split = col.split()
-            col = split.column()
-            col.prop(self, "bg_col")
-            col = split.column()
-            col.prop(self, "fg_col")
-            col = split.column()
-            col.prop(self, "line_col")
-            col = split.column()
-            col.prop(self, "scroll_col")
+            split = layout.column().split()
+            for item in ["col_bg", "fg_col", "col_line", "col_scroll"]:
+                split.column().prop(self, item)
 
     def draw_menu(self, context):
         prefs = bpy.context.preferences.addons[__name__].preferences
         self.layout.prop(prefs, "enable")
+
+
+def redraw(context):
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'TEXT_EDITOR':
+                area.tag_redraw()
 
 
 def register():
@@ -657,16 +633,21 @@ def register():
     prefs = bpy.context.preferences.addons[__name__].preferences
     sys.modules[__name__].p = prefs
     bpy.types.TEXT_MT_view.append(HighlightOccurrencesPrefs.draw_menu)
-    update_highlight(prefs, bpy.context)
-
+    prefs.enable = True
+    # update_highlight(prefs, bpy.context)
 
 
 def unregister():
-    bpy.types.TEXT_MT_view.remove(HighlightOccurrencesPrefs.draw_menu)
     prefs = bpy.context.preferences.addons[__name__].preferences
-    if prefs.enable:
-        prefs.enable = False
-        update_highlight(prefs, bpy.context)
+    prefs.enable = False
+    # update_highlight(prefs, bpy.context)
+    # if prefs.enable:
+    #     print("was enable")
+    #     prefs.enable = False
+    #     update_highlight(prefs, bpy.context)
+    # else:
+    #     print("not enable")
 
+    bpy.types.TEXT_MT_view.remove(HighlightOccurrencesPrefs.draw_menu)
     bpy.utils.unregister_class(HighlightOccurrencesPrefs)
     redraw(getattr(bpy, "context"))
