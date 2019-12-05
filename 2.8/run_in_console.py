@@ -12,7 +12,6 @@ bl_info = {
     "category": "Development"
 }
 
-_print = None
 _console = None
 _preferences = None
 
@@ -71,6 +70,7 @@ def set_spaces(spaces):
 
 def delayed_scrollback(items, c_dict=c_dict, type='INFO'):
     items = "".join(items)
+    assert 1 is 2
     bpy.app.timers.register(
         lambda: scrollback_append(
             items, c_dict=c_dict, type=type),
@@ -78,7 +78,6 @@ def delayed_scrollback(items, c_dict=c_dict, type='INFO'):
 
 
 def scrollback_append(items, c_dict=c_dict, type='INFO'):
-    # return
     """Append text to the console using bpy.ops.scrollback_append"""
     spaces = get_console_spaces(c_dict)
     if not spaces:  # default to builtin print if no console area exists
@@ -86,13 +85,16 @@ def scrollback_append(items, c_dict=c_dict, type='INFO'):
 
     set_spaces(spaces)
     scrollback = bpy.ops.console.scrollback_append
+
     if isinstance(items, str):
         if items[-1].endswith("\n"):
             items = items[:-1]
     elif isinstance(items, list):
         items = "\n".join(items)
+
     text = ""
     items = [*reversed([l.replace("\t", "    ") for l in items.split("\n")])]
+
     while items:
         if isinstance(bpy.context, _RestrictContext):
             break
@@ -123,11 +125,10 @@ def printc(*args, **kwargs):
 
 
 def update_assume_print(self, context):
-    builtins = get_builtins()
     if self.assume_print:
-        builtins.print = printc
-        return
-    builtins.print = _print
+        __builtins__['print'] = printc
+    else:
+        __builtins__['print'] = __builtins__['_print']
 
 
 class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
@@ -143,33 +144,26 @@ class TEXT_AP_run_in_console_prefs(bpy.types.AddonPreferences):
         update=update_assume_print
     )
 
-    persistent: BoolProperty(
-        default=False, name="Persistent", description="Access script bindings "
-        "in console after execution")
+    persistent: BoolProperty(name="Persistent", description=""
+                             "Access bindings in console after execution")
 
-    clear_bindings: BoolProperty(
-        default=False, name="Clear Bindings", description="Clear console "
-        "bindings before running text block")
+    clear_bindings: BoolProperty(name="Clear Bindings", description="Clear "
+                                 "console bindings before running text block")
 
-    keep_math: BoolProperty(
-        default=True, name="Keep Math", description="Restore 'math' module"
-        "after clearing")
+    keep_math: BoolProperty(default=True, name="Keep Math", description=""
+                            "Restore math on clear")
 
-    keep_mathutils: BoolProperty(
-        default=True, name="Keep Mathutils", description="Restore 'mathutils' "
-        "module after clearing")
+    keep_mathutils: BoolProperty(description="Restore mathutils on clear",
+                                 default=True, name="Keep Mathutils")
 
-    keep_convenience_vars: BoolProperty(
-        default=True, name="Keep C, D variables", description="Restore "
-        "Blender convenience variables eg. 'C' for context, 'D' for bpy.data")
+    keep_vars: BoolProperty(description="Restore convenience variables",
+                            default=True, name="Keep C, D variables")
 
-    show_name: BoolProperty(
-        default=True, name="Show Name", description="Display text name in the "
-        "console before execution")
+    show_name: BoolProperty(default=True, name="Show Name",
+                            description="Display text name in console")
 
-    show_elapsed: BoolProperty(
-        default=True, name="Show Elapsed", description="Display elapsed time "
-        "after execution")
+    show_time: BoolProperty(description="Display elapsed time after execution",
+                            default=True, name="Show Elapsed", )
 
     del BoolProperty
 
@@ -190,10 +184,9 @@ class Console:
         import time
         self.modules = traceback.sys.modules
 
-        self.template_dict = {
-            '__name__': '__main__',
-            '__builtins__': self.modules['builtins'],
-            'print': printc}
+        self.template_dict = {'__name__': '__main__',
+                              '__builtins__': self.modules['builtins'],
+                              'print': printc}
 
         self.module = type('__main__', (), self.template_dict)()
         self.backup = self.modules['__main__']
@@ -264,7 +257,7 @@ class Console:
                     if not k.startswith("__"):
                         con_locals[k] = v
 
-            if prefs.keep_convenience_vars:
+            if prefs.keep_vars:
                 con_locals['C'] = bpy.context
                 con_locals['D'] = bpy.data
 
@@ -273,7 +266,7 @@ class Console:
         if self.traceback:
             scrollback_append(self.traceback, type='ERROR')
 
-        if prefs.show_elapsed and getattr(self, "perf_time", 0):
+        if prefs.show_time and getattr(self, "perf_time", 0):
             # format the numbers so they look nicer
             time_ms = self.perf_time * 1000
             precision = 3
@@ -391,10 +384,10 @@ class TEXT_PT_run_in_console_settings(bpy.types.Panel):
             subcol = split.column()
             subcol.prop(prefs, 'keep_math')
             subcol.prop(prefs, 'keep_mathutils')
-            subcol.prop(prefs, 'keep_convenience_vars')
+            subcol.prop(prefs, 'keep_vars')
 
         col.prop(prefs, 'show_name')
-        col.prop(prefs, 'show_elapsed')
+        col.prop(prefs, 'show_time')
 
         # only display if accessed from the text editor
         if context.area.type == 'TEXT_EDITOR':
@@ -480,8 +473,11 @@ def get_builtin_print():
     _print = get_builtins().print
 
 
+def backup_print():
+    __builtins__['_print'] = __builtins__['print']
+
+
 def register():
-    # set_builtin_print()
     for cls in classes():
         bpy.utils.register_class(cls)
         if hasattr(cls, '_setup'):
@@ -521,5 +517,5 @@ def unregister():
         w.screen.pop('console_redirect', None)
 
 
-# store on read
-get_builtin_print()
+# Ensure there always is a backup version of __builtins__.print
+backup_print()
