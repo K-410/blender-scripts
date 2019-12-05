@@ -1,3 +1,14 @@
+# cleanup redundant functions
+# move small, single-use functions into execute body
+# fix surround being triggered erroneously
+# add auto-indent on line break if previous char is a left bracket
+# remove undo macro and undo push after fix https://developer.blender.org/D5222
+
+# added move toggle operator
+
+# TODO design: move all behavior into one operator
+# TODO disable surround if line is commented
+# TODO add comment sign on line break on commented lines
 import bpy
 
 bl_info = {
@@ -7,56 +18,25 @@ bl_info = {
     "version": (1, 0, 0),
     "blender": (2, 80, 0),
     "location": "Text Editor",
-    "category": "Misc"
+    "category": "Text Editor"
 }
-
-BR_L = {"(": ")", "[": "]", "{": "}"}
-BR_R = {value: key for key, value in BR_L.items()}
-BR_U = {"\"", "\'"}
-
-
-def indexof(txt, line):
-    for idx, lin in enumerate(txt.lines):
-        if line == lin:
-            return idx
-
-
-def is_right_brac(in_chr):
-    return in_chr in BR_R
-
-
-def is_uniform_brac(in_chr):
-    return in_chr in BR_U
+_BRACKETS = "()", ")(", "[]", "][", "{}", "}{", "\"\"", "\'\'"
+BRACKETS = {left: right for left, right in _BRACKETS}
+BRACKETS_L = {"(": ")", "[": "]", "{": "}"}
+BRACKETS_R = {value: key for key, value in BRACKETS_L.items()}
+BRACKETS_U = {"\"", "\'"}
+BRACKETS_ALL = {*BRACKETS_L.keys(), *BRACKETS_R.keys(), *BRACKETS_U}
 
 
 def is_match(chr_a, chr_b):
-    if chr_b in BR_R and chr_a in BR_L:
-        if BR_L[chr_a] == chr_b:
+    if chr_b in BRACKETS_R and chr_a in BRACKETS_L:
+        if BRACKETS_L[chr_a] == chr_b:
             return True
 
-    elif chr_b in BR_U and chr_a in BR_U:
+    elif chr_b in BRACKETS_U and chr_a in BRACKETS_U:
         if chr_b == chr_a:
             return True
     return False
-
-
-def get_next_char(txt):
-    bod = txt.select_end_line.body
-    end = txt.select_end_character
-    if len(bod) > txt.select_end_character:
-        return bod[end]
-    return ""
-
-
-def is_no_selection(txt):
-    return (txt.current_line == txt.select_end_line and
-            txt.current_character == txt.select_end_character)
-
-
-def delete_prev_next():
-    bpy.ops.text.delete(type='PREVIOUS_CHARACTER')
-    bpy.ops.text.move(type='NEXT_CHARACTER')
-    return bpy.ops.text.delete(type='PREVIOUS_CHARACTER')
 
 
 def swallow_brac():
@@ -64,64 +44,30 @@ def swallow_brac():
     return bpy.ops.text.move(type='NEXT_CHARACTER')
 
 
-def set_select(txt, lin_a, col_a, lin_b, col_b):
-    move, move_select = bpy.ops.text.move, bpy.ops.text.move_select
-    prev, next = 'PREVIOUS_CHARACTER', 'NEXT_CHARACTER'
-    up, dn = 'PREVIOUS_LINE', 'NEXT_LINE'
-
-    while txt.current_line_index != lin_a:
-        cur = txt.current_line_index
-        move(False, type=up if cur > lin_a else dn)
-
-    last = next_last = None
-    while txt.current_character != col_a:
-        cur = txt.current_character
-
-        # workaround for tab being treated as single character
-        if cur == next_last:
-            break
-        move(False, type=prev if cur > col_a else next)
-        next_last, last = last, txt.current_character
-
-    while indexof(txt, txt.select_end_line) != lin_b:
-        end = indexof(txt, txt.select_end_line)
-        move_select(False, type=up if end > lin_b else dn)
-
-    last = next_last = None
-    while txt.select_end_character != col_b:
-        end = txt.select_end_character
-        if end == next_last:
-            break
-        move_select(False, type=prev if end > col_b else next)
-        next_last, last = last, txt.select_end_character
-
-
 def selection_as_string(txt):
-    lin_a = txt.current_line_index
-    lin_b = indexof(txt, txt.select_end_line)
-    col_a = txt.current_character
-    col_b = txt.select_end_character
+    curl = txt.current_line_index
+    sell = txt.select_end_line_index
+    curc = txt.current_character
+    selc = txt.select_end_character
 
-    # store text without copying it to clipboard
-    asc_idx = sorted((lin_a, lin_b))
-    reverse = asc_idx != list((lin_a, lin_b))
-    selslice = slice(*[(i, j + 1) for i, j in [asc_idx]][0])
-    selection = [line.body for line in txt.lines[selslice]]
-    inline = False
+    a, b = sorted((curl, sell))
+    selection = [line.body for line in txt.lines[a:b + 1]]
 
-    if lin_a == lin_b:
-        inline = True
-        txt_sel = "\n".join(selection)[slice(*sorted((col_a, col_b)))]
-        return txt_sel, inline, reverse, lin_a, lin_b, col_a, col_b
+    reverse = False
+    inline = curl == sell
+    if inline:
+        curc, selc = sorted((curc, selc))
+        sel_string = "".join(selection)[curc:selc]
 
-    # else:
-    if reverse:
-        col_a, col_b = reversed((col_a, col_b))
+    else:
+        if (a, b) != (curl, sell):
+            reverse = True
+            curc, selc = selc, curc
 
-    selection[0] = selection[0][col_a::]
-    selection[-1] = selection[-1][:col_b]
-    txt_sel = "\n".join(selection)
-    return txt_sel, inline, reverse, lin_a, lin_b, col_a, col_b
+        selection[0] = selection[0][curc:]
+        selection[-1] = selection[-1][:selc]
+        sel_string = "\n".join(selection)
+    return sel_string, inline, reverse, curl, sell, curc, selc
 
 
 def surround(self, txt, left, right):
@@ -137,7 +83,7 @@ def surround(self, txt, left, right):
             col_a, col_b = col_b, col_a + 1
     else:
         col_a, col_b = col_a + 1, col_b + 1
-    set_select(txt, lin_a, col_a, lin_b, col_b)
+    txt.select_set(lin_a, col_a, lin_b, col_b)
     return {'FINISHED'}
 
 
@@ -147,10 +93,13 @@ def delete_backspace(txt):
 
     if len(bod) > caret:
 
-        if is_no_selection(txt):
+        if (txt.current_line == txt.select_end_line and
+           txt.current_character == txt.select_end_character):
             # delete prev/next brackets if they match
             if is_match(bod[caret - 1], bod[caret]):
-                return delete_prev_next()
+                bpy.ops.text.delete(type='PREVIOUS_CHARACTER')
+                bpy.ops.text.move(type='NEXT_CHARACTER')
+                return bpy.ops.text.delete(type='PREVIOUS_CHARACTER')
 
     return bpy.ops.text.delete(type='PREVIOUS_CHARACTER')
 
@@ -162,15 +111,18 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
     bl_options = {'INTERNAL'}
 
     _selection = [...] * 7
-    _unicodes = {"@", "£", "$", "€", "~", "|", "µ", "¤"}
+    _unicodes = {"@", "£", "$", "€", "~", "|", "µ", "¤", "[", "]", "{", "}"}
     store: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
     delete: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
     # TODO use event.unicode to get typed character
 
+    @classmethod
+    def poll(cls, context):
+        return getattr(context, "edit_text", None)
+
     def invoke(self, context, event):
         txt = context.space_data.text
-
         # delete opposite matching bracket if it exists
         if self.delete:
             return delete_backspace(txt)
@@ -190,30 +142,38 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
         txt_sel, inline, reverse,\
             lin_a, lin_b, col_a, col_b = __class__._selection
         bod = txt.select_end_line.body
-        # caret = txt.select_end_character
+        end = txt.select_end_character
 
-        chr_next = get_next_char(txt)
-
+        if len(bod) > txt.select_end_character:
+            chr_next = bod[end]
+        else:
+            chr_next = ""
         try:
             in_chr = event.unicode  # get the typed character
-            r_brac = BR_L.get(in_chr)
+            r_brac = BRACKETS_L.get(in_chr)
             if r_brac:
                 if chr_next:
                     # don't surround unless next char is whitespace or none
                     # or if next character is not the matching bracket
-                    if chr_next != " " and chr_next == BR_R[BR_L[in_chr]]:
-                        if lin_a == lin_b and col_a == col_b:
-                            return {'FINISHED'}
+                    if chr_next != " " and chr_next not in BRACKETS_ALL:
+                        # check if next chr is the matching bracket
+                        if (chr_next == BRACKETS_R[BRACKETS_L[in_chr]] or
+                           chr_next not in BRACKETS_ALL or
+                           chr_next in BRACKETS_L):
+                            # check if no selection
+                            if lin_a == lin_b and col_a == col_b:
+                                return {'FINISHED'}
+                        # check if next chr is a left bracket
                 return surround(self, txt, in_chr, r_brac)
 
-            elif is_right_brac(in_chr):  # typed char is right bracket
-                r_brac = BR_L.get(BR_R[in_chr])
-                if in_chr in BR_R and BR_R[in_chr] in BR_L:
+            elif in_chr in BRACKETS_R:  # typed char is right bracket
+                r_brac = BRACKETS_L.get(BRACKETS_R[in_chr])
+                if BRACKETS_R[in_chr] in BRACKETS_L:
                     # swallow only if the bracket types are identical
                     if chr_next == r_brac:
                         return swallow_brac()  # swallow the typed char
 
-            elif is_uniform_brac(in_chr):  # handle (ticks, quotes) differently
+            elif in_chr in BRACKETS_U:  # see if typed is quotation marks
                 if chr_next:
 
                     # check if it matches with typed and no selection
@@ -231,7 +191,7 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
                                 return surround(self, txt, in_chr, in_chr)
                 else:
                     if chr_next and chr_next != " ":
-                        if txt_sel or chr_next in BR_R:
+                        if txt_sel or chr_next in BRACKETS_R:
                             return surround(self, txt, in_chr, in_chr)
                     else:
                         return surround(self, txt, in_chr, in_chr)
@@ -246,12 +206,10 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
         # workaround for ctrl+backspace
         if ctrl and event.type == 'BACK_SPACE' and event.value == 'PRESS':
             return bpy.ops.text.delete(False, type='PREVIOUS_WORD')
-
         return {'FINISHED'}
 
     @classmethod
     def _setup(cls):
-        cls._keymaps = []
         kc = bpy.context.window_manager.keyconfigs
         km = kc.default.keymaps.get('Text')
 
@@ -263,8 +221,8 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
         kmidef.active = False
         new = km.keymap_items.new
 
-        kmi = new("TEXT_OT_insert2", 'TEXTINPUT', 'ANY')
-        cls._keymaps.append((km, kmi, kmidef))
+        kmi = new("TEXT_OT_insert2", 'TEXTINPUT', 'ANY', head=True)
+        # cls._keymaps.append((km, kmi, kmidef))
 
         # disable default backspace delete kmi
         kmidef = get_default_kmi(km, "text.delete", "BACK_SPACE", "PRESS")
@@ -272,7 +230,7 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
         kmidef.active = False
         kmi = new("TEXT_OT_insert2_internal", 'BACK_SPACE', 'PRESS')
         kmi.properties.delete = 1
-        cls._keymaps.append((km, kmi, kmidef))
+        cls._keymaps = [(km, kmi, kmidef)]
 
     @classmethod
     def _remove(cls):
@@ -285,11 +243,9 @@ class TEXT_OT_insert2_internal(bpy.types.Operator):
 
 # find a kmi from blender's default keymap
 def get_default_kmi(km, kmi_idname, kmi_type, kmi_value):
-    matches = (k for k in km.keymap_items if k.idname == kmi_idname)
-    for kmi in matches:
-        if kmi_type == kmi.type:
-            if kmi_value == kmi.value:
-                return kmi
+    for kmi in (k for k in km.keymap_items if k.idname == kmi_idname):
+        if kmi_type == kmi.type and kmi_value == kmi.value:
+            return kmi
 
 
 # Insert 2 is called by text input and executes a chain of operators
@@ -301,25 +257,25 @@ class TEXT_OT_insert2(bpy.types.Macro):
     @classmethod
     def _setup(cls):
 
-        # store text selection for later
+        # 1. TEXT_OT_insert2_internal is called with store=True and serves
+        # to store any text selection, so that it can be retrieved later
+        #
+        # 2. TEXT_OT_insert is called for the actual input
+        #
+        # 3. TEXT_OT_insert2_internal is called again and handles
+        # the behavioral logic like surround brackets, swallow etc.
+
         cls.define("TEXT_OT_insert2_internal").properties.store = 1
-
-        # because blender can't undo properly without it
-        cls.define("ED_OT_undo_push").properties.message = cls.bl_label
-
-        # actual text input operator
         # TODO replace with event.unicode XXX needs a lot of behavior rewrite
         cls.define("TEXT_OT_insert")
-
-        # surround, swallow, special behavior etc.
         cls.define("TEXT_OT_insert2_internal")
 
 
 def classes():
-    mod = globals().values()
-    return [i for i in mod if hasattr(i, 'mro')
-            and bpy.types.bpy_struct in i.mro()
-            and i.__module__ == __name__]
+    return [
+        TEXT_OT_insert2,
+        TEXT_OT_insert2_internal
+    ]
 
 
 def register():
@@ -334,3 +290,30 @@ def unregister():
         if hasattr(cls, '_remove'):
             cls._remove()
         bpy.utils.unregister_class(cls)
+
+
+def disable_kmi(cls, km_type='3D View', idname=None, type=None, value=None,
+                alt=False, shift=False, ctrl=False, retries=3):
+    if retries <= 0:
+        raise ValueError("No matches or keymap wasn't ready")
+    if not any((idname, type, value)):
+        raise ValueError("Nothing to search for")
+
+    kc = bpy.context.window_manager.keyconfigs.active
+    km = kc.keymaps.get(km_type)
+    if not km:
+        raise KeyError("Keymap doesn't exist in active keyconfig")
+    no_idname, no_type, no_value = not idname, not type, not value
+    for kmi in km.keymap_items:
+        if ((kmi.type == type or no_type) and
+            (kmi.value == value or no_value) and
+            (kmi.idname == idname or no_idname) and
+           kmi.alt == alt and kmi.shift == shift and kmi.ctrl == ctrl):
+            kmi.active = False
+            if not hasattr(cls, "_disabled"):
+                cls._disabled = []
+            return cls._disabled.append(kmi)
+
+    from bpy.app.timers import register
+    args = km_type, idname, type, value, alt, shift, ctrl, retries - 1
+    register(lambda: disable_kmi(*args), first_interval=0.2)
