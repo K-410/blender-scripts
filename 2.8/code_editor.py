@@ -19,7 +19,7 @@
 import bpy
 import bgl
 import blf
-from time import perf_counter
+# from time import perf_counter
 from gpu.shader import from_builtin
 from gpu_extras.batch import batch_for_shader
 from bpy.types import Operator
@@ -30,7 +30,7 @@ bl_info = {
     "name": "Code Editor",
     "location": "Text Editor > Right Click Menu",
     "version": (0, 1, 0),
-    "blender": (2, 81, 0),
+    "blender": (2, 82, 0),
     "description": "Better editor for coding",
     "author": "Jerryno, tintwotin, kaio",
     "category": "Text Editor",
@@ -597,13 +597,17 @@ class MinimapEngine:
 
 
 def get_cw(st):
+    cw = xoffs = 0
     for idx, line in enumerate(st.text.lines):
         if line.body:
             loc = st.region_location_from_cursor
             xoffs = loc(idx, 0)[0]
-            return loc(idx, 1)[0] - xoffs, xoffs
-    wu3 = get_widget_unit(bpy.context) // 2
-    return round(blf.dimensions(1, "T")[0]), wu3
+            cw = loc(idx, 1)[0] - xoffs
+            break
+    if not cw:
+        xoffs = get_widget_unit(bpy.context) // 2
+        cw = round(blf.dimensions(1, "T")[0])
+    return cw, xoffs
 
 # =====================================================
 #                    OPENGL DRAWCALS
@@ -612,7 +616,7 @@ def get_cw(st):
 
 def draw_callback_px(context):
     """Draws Code Editors Minimap and indentation marks"""
-    t = perf_counter()
+    # t = perf_counter()
     text = context.edit_text
     if not text:
         return
@@ -625,22 +629,26 @@ def draw_callback_px(context):
         ce.text_name = text.name
 
     wu = get_widget_unit(context)  # get the correct ui scale
-    wu2, wu3 = wu * 0.05, wu // 2
+    wu2 = wu * 0.05
     rw, rh = ce.region.width, ce.region.height
     visl = st.visible_lines
     lines = text.lines
     lenl = len(lines)
-    lnrs = st.show_line_numbers and len(repr(lenl))
+    lnrs = st.show_line_numbers and len(repr(lenl)) + 2
     cw, xoffs = get_cw(st)
-    xstart = len(repr(lenl)) * cw + wu3
-    text_xoffset = wu3 + (cw * lnrs)
+
+    # Main text drawing x offset from area edge
+    _x = cw
+    if st.show_line_numbers:
+        _x += cw * lnrs
+
     mcw = ce.mmcw * round(wu2, 1)  # minimap char width
     maxw = 120 * wu2
     redge = ce.redge = 1 + int(int(rw - (0.2 * wu)) - (0.4 * wu))
 
     # use different cache for wrapped. less performant, but still cached
     if word_wrap:
-        ce.cmax = cmax = (rw - wu - text_xoffset) // cw
+        ce.cmax = cmax = (rw - wu - _x) // cw
         mmw = min((mcw * 0.8 * (redge // cw), maxw))
         text, lines = ce.validate()
         lenl = len(lines)
@@ -772,8 +780,8 @@ def draw_callback_px(context):
                     ymin = ymax - lh
                     bgl.glLineWidth(wu2)
                     if -lh < ymin < rh:
-                        x = xstart + indent * level
-                        if x >= text_xoffset - 10:
+                        x = xoffs + indent * level
+                        if x >= _x:
                             seq2_ext(((x, ymin), (x, ymax)))
                             continue
     draw_lines_2d(seq1, color1)
@@ -821,8 +829,8 @@ def draw_callback_px(context):
 
     # draw whitespace and/or tab characters
     if ce.show_whitespace:
-        cstart = (text_xoffset + wu3 - xoffs) // cw - 1
-        cend = (lbound - text_xoffset) // cw
+        st_left = (_x // cw) - (xoffs // cw)
+        cend = (lbound - _x) // cw
 
         wslines = []
         append = wslines.append
@@ -832,6 +840,9 @@ def draw_callback_px(context):
             wsbod = []
             append2 = wsbod.append
             for ci, c in enumerate(l.body):
+                if ci < st_left:
+                    append2(" ")
+                    continue
                 if c is "\t":
                     tb = tab_width - ((ci + ti) % tab_width) - 1
                     append2(" " * tb + "→")
@@ -842,13 +853,12 @@ def draw_callback_px(context):
                     append2(" ")
             append(join(wsbod))
 
-        x = xoffs + cstart * cw
         y = rh - (lh * 0.8)
         blf.color(1, *plain_col, 1 * ce.ws_alpha)
         for idx, line in enumerate(wslines):
             if line:
-                blf.position(1, x, y, 0)
-                blf.draw(1, line[cstart:cend])
+                blf.position(1, _x, y, 0)
+                blf.draw(1, line[st_left:cend])
             y -= lh
 
     # restore opengl defaults
