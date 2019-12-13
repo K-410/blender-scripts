@@ -21,7 +21,7 @@ bl_info = {
     "name": "Toggle Hide",
     "location": "3D View / Outliner, (Hotkey J)",
     "version": (0, 1, 0),
-    "blender": (2, 82, 0),
+    "blender": (2, 81, 0),
     "description": "Toggle object visibility of outliner selection",
     "author": "kaio",
     "category": "Object",
