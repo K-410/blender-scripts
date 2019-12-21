@@ -20,7 +20,7 @@ bl_info = {
     "description": "Unobtrusive incremental save",
     "author": "kaio",
     "version": (1, 0, 0),
-    "blender": (2, 82, 0),
+    "blender": (2, 81, 0),
     "location": "Anywhere",
     "category": "File Browser"
 }
@@ -76,7 +76,7 @@ class WM_OT_save_incremental(bpy.types.Operator):
         show_notification = prefs.show_notification
 
         bpy.ops.wm.save_as_mainfile('EXEC_DEFAULT', filepath=fp, **kwargs)
-        
+
         if show_notification:
             self.report({'INFO'}, f"Saved \"{_path.basename(fp)}\"")
         return {'FINISHED'}
