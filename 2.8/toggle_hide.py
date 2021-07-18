@@ -15,76 +15,118 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 #
 # ##### END GPL LICENSE BLOCK #####
-import ctypes
+
+
+# Currently supports versions:
+#   2.83.x LTS
+#   2.93.1
+#   3.0 alpha
+
 import bpy
-from time import monotonic
+from ctypes import c_int, c_float, c_void_p, c_short, \
+    c_char, c_char_p, c_uint, POINTER, Structure
 
 bl_info = {
     "name": "Toggle Hide",
     "location": "3D View / Outliner, (Hotkey J)",
-    "version": (0, 2, 0),
+    "version": (0, 1, 0),
     "blender": (2, 83, 0),
     "description": "Toggle object visibility of outliner selection",
     "author": "kaio",
     "category": "Object",
 }
 
+# Blender major/sub version
+version = bpy.app.version[:2]
+
+def idcode(id):
+    return sum(j << 8 * i for i, j in enumerate(id.encode()))
 
 
-def space_outliner():
-    """Get the outliner. If context area is outliner, return it."""
-    context = bpy.context
-    if context.area.type == 'OUTLINER':
-        return context.space_data
-    for w in context.window_manager.windows:
-        for a in w.screen.areas:
-            if a.type == 'OUTLINER':
-                return a.spaces.active
-
-def redraw(t=None):
-    """Redraw an outliner.
-    Since this may be called for multiple objects in one operation, defer
-    redraw.
-    """
-    tnext = monotonic()
-    if t != tnext:
-        wm = bpy.context.window_manager
-        redraw.funcs = [a.regions[-1].tag_redraw for w in wm.windows
-                        for a in w.screen.areas if a.type == 'OUTLINER']
-        redraw.__defaults__ = tnext,
-    for tag_redraw in redraw.funcs:
-        tag_redraw()
+# source/blender/makesdna/DNA_ID_enums.h
+# We only care about types which can have their visibility toggled.
+ID_OB = idcode("OB")  # bpy.types.Object
+ID_LAYERCOLL = 0
 
 
-def listbase(ctype=None):
-    ptr = ctypes.POINTER(ctype)
-    name = getattr(ctype, "__name__", "Generic")
+def listbase(ctyp=None):
+    ptr = POINTER(ctyp)
+    name = getattr(ctyp, "__name__", "Generic")
     fields = {"_fields_": (("first", ptr), ("last", ptr))}
-    return type(f"ListBase_{name}", (ctypes.Structure,), fields)
+    return type(f"ListBase_{name}", (Structure,), fields)
 
 
 def fproperty(funcs, property=property):
     return property(*funcs())
 
 
-class TreeElement(ctypes.Structure):
+def _dyn_entry(name, ctyp, predicate):
+    """Insert a Structure._fields_ entry based on predicate. Making it
+    easier to add version-specific changes."""
+    if predicate:
+        return (name, ctyp),
+    return ()
+
+
+# source/blender/makesdna/DNA_view2d_types.h
+class View2D(Structure):
+    _fields_ = (
+        ("tot", c_float * 4),
+        ("cur", c_float * 4),
+        ("vert", c_int * 4),
+        ("hor", c_int * 4),
+        ("mask", c_int * 4),
+        ("min", c_float * 2),
+        ("max", c_float * 2),
+        ("minzoom", c_float),
+        ("maxzoom", c_float),
+        ("scroll", c_short),
+        ("scroll_ui", c_short),
+        ("keeptot", c_short),
+        ("keepzoom", c_short),
+        ("keepofs", c_short),
+        ("flag", c_short),
+        ("align", c_short),
+        ("winx", c_short),
+        ("winy", c_short),
+        ("oldwinx", c_short),
+        ("oldwiny", c_short),
+        ("around", c_short),
+        *_dyn_entry("tab_offset", POINTER(c_float), version == (2, 83)),
+        *_dyn_entry("tab_num", c_int, version == (2, 83)),
+        *_dyn_entry("tab_cur", c_int, version == (2, 83)),
+        ("alpha_vert", c_char),
+        ("alpha_hor", c_char),
+        *_dyn_entry("_pad", c_char * 6, version == (2, 83)),
+        ("sms", c_void_p),
+        ("smooth_timer", c_void_p),
+    )
+
+
+# source/blender/makesdna/DNA_outliner_types.h
+class TreeStoreElem(Structure):
+    _fields_ = (
+        ("type", c_short),
+        ("nr", c_short),
+        ("flag", c_short))
+
+
+# source/blender/editors/space_outliner/outliner_intern.h
+class TreeElement(Structure):
     _object = None
     _treeid = None
+    _root = None
 
     @fproperty
     def select():
         """Get/set the selection of a tree element."""
         def getter(self):
-            return bool(self._store_elem.contents.flag & 2)
+            return bool(self.store_elem.contents.flag & 2)
         def setter(self, state):
-            tse = self._store_elem.contents
-            flag = tse.flag
             if state:
-                tse.flag |= 2
+                self.store_elem.contents.flag |= 2
             else:
-                tse.flag &= ~2
-            if flag != tse.flag:
-                redraw()
+                self.store_elem.contents.flag &= ~2
         return getter, setter
 
     @fproperty
@@ -93,197 +135,243 @@ class TreeElement(ctypes.Structure):
         def getter(self):
             return not bool(self.tseflag & 1)
         def setter(self, state):
-            tse = self._store_elem.contents
             if state:
-                tse.flag &= ~1
+                self.store_elem.contents.flag &= ~1
             else:
-                tse.flag |= 1
+                self.store_elem.contents.flag |= 1
         return getter, setter
 
     @property
     def treeid(self):
-        """Tree element identifier, internal."""
+        """Internal use. """
         if self._treeid is None:
             self._treeid = hash(
-                tuple((t._name.decode(), t.idcode) for t in self._resolve()))
+                tuple((t.name.decode(), t.idcode) for t in self._resolve()))
         return self._treeid
 
     def _resolve(self):
         """Tree element path, internal."""
         link = [self]
-        parent = self._parent
+        parent = self.parent
         while parent:
             link.append(parent.contents)
-            parent = parent.contents._parent
+            parent = parent.contents.parent
         return tuple(reversed(link))
 
-    def as_object(self):
+    def as_object(self, root):
+        """Return the bpy.types.Object or LayerCollection instance"""
         if self._object is None:
-            self._object = obj_by_id(self)
+            objs = bpy.context.view_layer.objects
+
+            for t in subtrees_get(root):
+                if t.treeid == self.treeid:
+                    name = t.name.decode()
+
+                    if t.idcode == ID_LAYERCOLL:
+                        lc = bpy.context.view_layer.layer_collection
+                        for p in [t.name.decode() for t in self._resolve()][1:]:
+                            lc = lc.children[p]
+                        self._object = lc
+                        break
+
+                    elif t.idcode == ID_OB:
+                        self._object = objs[name]
+                        break
+
         return self._object
 
-
-class SpaceOutliner(ctypes.Structure):
-    _fields_ = (
-        ("next", ctypes.c_void_p),
-        ("prev", ctypes.c_void_p),
-        ("regionbase", ctypes.c_void_p * 2),
-        ("spacetype", ctypes.c_char),
-        ("link_flag", ctypes.c_char),
-        ("pad0", ctypes.c_char * 6),
-        ("v2d", ctypes.c_char * 168),
-        ("tree", listbase(TreeElement)))
-
-
-class TreeStoreElem(ctypes.Structure):
-    _fields_ = (
-        ("type", ctypes.c_short),
-        ("nr", ctypes.c_short),
-        ("flag", ctypes.c_short))
+    @classmethod
+    def from_outliner(cls, so):
+        return SpaceOutliner.from_address(so.as_pointer()).tree.first
 
 
 TreeElement._fields_ = (
-    ("next", ctypes.POINTER(TreeElement)),
-    ("prev", ctypes.POINTER(TreeElement)),
-    ("_parent", ctypes.POINTER(TreeElement)),
+    ("next", POINTER(TreeElement)),
+    ("prev", POINTER(TreeElement)),
+    ("parent", POINTER(TreeElement)),
+    *_dyn_entry("type", c_void_p, version > (2, 91)),
     ("subtree", listbase(TreeElement)),
-    ("xys", ctypes.c_int * 2),
-    ("_store_elem", ctypes.POINTER(TreeStoreElem)),
-    ("flag", ctypes.c_short),
-    ("index", ctypes.c_short),
-    ("idcode", ctypes.c_short),
-    ("xend", ctypes.c_short),
-    ("_name", ctypes.c_char_p),
-    ("directdata", ctypes.c_void_p),
-    ("rnaptr", ctypes.c_void_p * 3))
+    ("xs", c_int),
+    ("ys", c_int),
+    ("store_elem", POINTER(TreeStoreElem)),
+    ("flag", c_short),
+    ("index", c_short),
+    ("idcode", c_short),
+    ("xend", c_short),
+    ("name", c_char_p),
+    ("directdata", c_void_p),
+    ("rnaptr", c_void_p * 3))
 
 
-class wmWindowManager(ctypes.Structure):
+# source/blender/makesdna/DNA_space_types.h
+class SpaceOutliner(Structure):
     _fields_ = (
-        ("id", ctypes.c_char * 160),
-        ("windrawable", ctypes.c_void_p),
-        ("winactive", ctypes.c_void_p),
+        ("next", c_void_p),
+        ("prev", c_void_p),
+        ("regionbase", listbase()),
+        ("spacetype", c_char),
+        ("link_flag", c_char),
+        ("pad0", c_char * 6),
+        ("v2d", View2D),
+        ("tree", listbase(TreeElement)),
+        # ... (cont)
+    )
+    @classmethod
+    def get_tree(cls, so: bpy.types.SpaceOutliner) -> TreeElement:
+        return cls.from_address(so.as_pointer()).tree.first
+
+
+# source/blender/makesdna/DNA_ID.h
+class ID(Structure):
+    _fields_ = (
+        ("next", c_void_p),
+        ("prev", c_void_p),
+        ("newid", c_void_p),
+        ("lib", c_void_p),
+        *_dyn_entry("asset_data", c_void_p, version > (2, 83)),
+        ("name", c_char * 66),
+        ("flag", c_short),
+        ("tag", c_int),
+        ("us", c_int),
+        ("icon_id", c_int),
+        ("recalc", c_int),
+        ("recalc_up_to_undo_push", c_int),
+        ("recalc_after_undo_push", c_int),
+        ("session_uuid", c_uint),
+        ("properties", c_void_p),
+        ("override_library", c_void_p),
+        ("orig_id", c_void_p),
+        ("py_instance", c_void_p),
+        *_dyn_entry("_pad1", c_void_p, version > (2, 83))
+    )
+
+
+# source/blender/makesdna/DNA_windowmanager_types.h
+class wmWindowManager(Structure):
+    _fields_ = (
+        ("id", ID),
+        ("windrawable", c_void_p),
+        ("winactive", c_void_p),
         ("windows", listbase()),
-        ("initialized", ctypes.c_short),
-        ("file_saved", ctypes.c_short),
-        ("op_undo_depth", ctypes.c_short),
-        ("outliner_sync_select_dirty", ctypes.c_short))
+        ("initialized", c_short),
+        ("file_saved", c_short),
+        ("op_undo_depth", c_short),
+        ("outliner_sync_select_dirty", c_short),
+        # ... (cont)
+    )
 
 
-# TODO: Make non-recursive.
 def subtrees_get(tree):
     """Given a tree, retrieve all its sub tree elements."""
-    subtrees = []
-    stree = tree.contents.subtree.first
-    while stree:
-        subtrees.append(stree.contents)
-        subtrees.extend(subtrees_get(stree))
-        stree = stree.contents.next
-    return subtrees
-
-
-def obj_by_id(self):
-    """Given a tree id, return an object instance or a layer collection.
-
-    A tree id is a hash based on object name and outliner path, and makes
-    it possible to identify view layer object instances (object bases).
-    """
-    objs = bpy.context.view_layer.objects
-    assert OUTLINER_OT_toggle_hide.root is not None
-    for t in subtrees_get(OUTLINER_OT_toggle_hide.root):
-        if t.treeid == self.treeid:
-            name = t._name.decode()
-
-            # Item is a layer collection.
-            if t.idcode == 0:
-                lc = bpy.context.view_layer.layer_collection
-                for p in [t._name.decode() for t in self._resolve()][1:]:
-                    lc = lc.children[p]
-                return lc
-
-            # Item is an object instance.
-            elif name in objs:
-                return objs[name]
-            raise ValueError("Bad idcode:", t.idcode)
+    trees = []
+    pool = [tree]
+    while pool:
+        t = pool.pop().contents
+        trees.append(t)
+        child = t.subtree.first
+        while child:
+            pool.append(child)
+            child = child.contents.next
+    return trees[1:]
 
 
 class OUTLINER_OT_toggle_hide(bpy.types.Operator):
+    """Toggle the visibility of current outliner selection"""
     bl_idname = "outliner.toggle_hide"
     bl_label = "Toggle Hide"
     bl_options = {'REGISTER', 'UNDO'}
 
-    root = None
+    _keymaps = []
+    _root = None
+    _so = None
 
+    # Toggling only works when an outliner area is present. When two or more
+    # outliners exist, the active outliner is used for purpose of selection.
     @classmethod
-    def poll(self, context):
-        ar = context.screen.areas
-        __class__.area = next(
-            (a for a in ar if a.type == 'OUTLINER'), None)
-        return __class__.area
+    def poll(cls, context):
+        if context.area.type == 'OUTLINER':
+            cls._so = context.space_data
+            return True
+
+        for win in context.window_manager.windows:
+            for ar in win.screen.areas:
+                if ar.type == 'OUTLINER':
+                    cls._so = ar.spaces.active
+                    return True
+        return False
 
     def execute(self, context):
-        so = space_outliner()
-        assert so
-        ret = SpaceOutliner.from_address(so.as_pointer())
+        if self._so is None:
+            return {'CANCELLED'}
 
-        # Represents "Scene Collection", ie the topmost tree element.
-        OUTLINER_OT_toggle_hide.root = ret.tree.first
-
+        # Represents "Scene Collection" ie. the topmost tree element.
+        root = TreeElement.from_outliner(self._so)
         wmstruct = wmWindowManager.from_address(context.window_manager.as_pointer())
 
+        # Track processed objects to prevent those that appear in multiple
+        # collections from being processed again.
         walked = set()
-        for t in subtrees_get(OUTLINER_OT_toggle_hide.root):
-            if t.select:
-                obj = t.as_object()
+        types = {ID_OB, ID_LAYERCOLL}
+
+        for tree in subtrees_get(root):
+            if tree.select and tree.idcode in types:
+                obj = tree.as_object(root)
                 if obj in walked:
                     continue
-                # Is a layer collection, toggle its visibility.
+
+                # Is a layer collection
                 elif isinstance(obj, bpy.types.LayerCollection):
                     obj.hide_viewport ^= True
 
-                # Is a hidden object instance, show it.
-                elif obj.hide_get():
-                    obj.hide_set(False)
-                    obj.select_set(True)
+                # Is a bpy.types.Object instance
+                elif isinstance(obj, bpy.types.Object):
+                    if obj.hide_get():
+                        obj.hide_set(False)
+                        obj.select_set(True)
+                        # Prevent outliner selection sync.
+                        wmstruct.outliner_sync_select_dirty &= ~1
 
-                    # Clear sync flag so the object's visibility can be toggled
-                    # without affecting the outliner selection.
-                    wmstruct.outliner_sync_select_dirty &= ~1
-
-                # Is a visible object instance. Hide it.
-                else:
-                    obj.hide_set(True)
+                    # Is a visible object instance. Hide it.
+                    else:
+                        obj.hide_set(True)
 
                 # Traversed objects are tracked to prevent multiple instances from
                 # toggling eachother.
                 walked.add(obj)
-        OUTLINER_OT_toggle_hide.root = None
+
+        # Redraw to show any changes.
+        for ar in self._so.id_data.areas:
+            if ar.spaces.active == self._so:
+                ar.tag_redraw()
+                break
+
+        OUTLINER_OT_toggle_hide._so = None
         return {'FINISHED'}
 
+    @classmethod
+    def register(cls):
+        # Register keymaps
+        kc = bpy.context.window_manager.keyconfigs.addon.keymaps
 
-addon_keymaps = []
+        km = kc.get("Object Mode") or kc.new("Object Mode")
+        kmi = km.keymap_items.new(cls.bl_idname, 'J', 'PRESS')
+        cls._keymaps.append((km, kmi))
+
+        km = kc.get("Outliner") or kc.new("Outliner", space_type='OUTLINER')
+        kmi = km.keymap_items.new("outliner.toggle_hide", 'J', 'PRESS')
+        cls._keymaps.append((km, kmi))
+
+    @classmethod
+    def unregister(cls):
+        for km, kmi in cls._keymaps:
+            km.keymap_items.remove(kmi)
+        cls._keymaps.clear()
 
 
 def register():
+    if version < (2, 83):
+        raise AssertionError("Minimum Blender version 2.83 required")
     bpy.utils.register_class(OUTLINER_OT_toggle_hide)
-    wm = bpy.context.window_manager
-    kc = wm.keyconfigs.addon.keymaps
-    km = kc.get("Object Mode")
-    if not km:
-        km = kc.new("Object Mode")
-    kmi = km.keymap_items.new("outliner.toggle_hide", "J", "PRESS")
-    addon_keymaps.append((km, kmi))
-
-    km = kc.get("Outliner")
-    if not km:
-        km = kc.new("Outliner", space_type="OUTLINER")
-    kmi = km.keymap_items.new("outliner.toggle_hide", "J", "PRESS")
-    addon_keymaps.append((km, kmi))
-
 
 def unregister():
     bpy.utils.unregister_class(OUTLINER_OT_toggle_hide)
-
-    for km, kmi in addon_keymaps:
-        km.keymap_items.remove(kmi)
-    addon_keymaps.clear()
