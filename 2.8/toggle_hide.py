@@ -407,8 +407,7 @@ def get_any_space_outliner() -> bpy.types.SpaceOutliner | None:
         for window in bpy.context.window_manager.windows:
             for area in window.screen.areas:
                 if area.type == 'OUTLINER':
-                    space = area.spaces.active
-                    break
+                    return area.spaces.active
     return space
 
 
