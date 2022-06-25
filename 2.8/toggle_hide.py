@@ -397,11 +397,19 @@ def subtrees_get(tree) -> List[TreeElement]:
 
 
 def get_any_space_outliner() -> bpy.types.SpaceOutliner | None:
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'OUTLINER':
-                return area.spaces.active
-    return None
+    """
+    Try to get the outliner space data from context, otherwise
+    find and return the first one.
+    """
+    space = getattr(bpy.context, "space_data", None)
+
+    if not isinstance(space, bpy.types.SpaceOutliner):
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'OUTLINER':
+                    space = area.spaces.active
+                    break
+    return space
 
 
 class OUTLINER_OT_toggle_hide(bpy.types.Operator):
