@@ -19,7 +19,6 @@
 import bpy
 import bgl
 import blf
-# from time import perf_counter
 from gpu.shader import from_builtin
 from gpu_extras.batch import batch_for_shader
 from bpy.types import Operator
@@ -29,14 +28,14 @@ from itertools import repeat
 bl_info = {
     "name": "Code Editor",
     "location": "Text Editor > Right Click Menu",
-    "version": (0, 1, 0),
-    "blender": (2, 82, 0),
+    "version": (0, 2, 0),
+    "blender": (3, 2, 2),
     "description": "Better editor for coding",
     "author": "Jerryno, tintwotin, kaio",
     "category": "Text Editor",
 }
 
-
+is_text = bpy.types.Text.__instancecheck__  # Faster than isinstance(x, bpy.types.Text)
 sh_2d = from_builtin('2D_UNIFORM_COLOR')
 sh_2d_uniform_float = sh_2d.uniform_float
 sh_2d_bind = sh_2d.bind
@@ -77,19 +76,13 @@ class DefaultInt(defaultdict):
         return self._get(i)
 
 
-class TextCache(defaultdict):
-    __slots__ = ('__dict__',)
-
-    def __init__(self):
-        super(__class__, self).__init__()
-        self.__dict__ = self
-
+class TextCache(dict):
     def __missing__(self, key):  # generate a blank cache
         text = bpy.data.texts.get(key, self.ce.wrap_text)
         self.purge_unused()
         hashes = defaultdict(lambda: None)
 
-        def defaultlist():
+        def defaultlist(text=text):
             return [[] for _ in repeat(None, len(text.lines))]
         data = defaultdict(defaultlist)
         indents = DefaultInt()
@@ -229,7 +222,7 @@ class CodeEditorManager(dict):
                 del self[ed]
 
     def nuke(self):
-        self.tcache.__init__()
+        self.tcache.clear()
         self.editors.clear()
         self.clear()
 
@@ -335,7 +328,6 @@ class MinimapEngine:
                 remove(entry)
 
     def highlight(self, tidx):
-        # t = perf_counter()
         texts = bpy.data.texts
         if not texts:  # abort if requested during undo/redo
             return
@@ -591,8 +583,6 @@ class MinimapEngine:
         output[6]['elements'] = dspecial  # XXX needs fixing
         # output[7]['elements'] = dtabs
         ce.indents = indents
-        # t2 = perf_counter()
-        # print("draw:", round((t2 - t) * 1000, 2), "ms")
         ce.tag_redraw()
 
 
@@ -616,7 +606,6 @@ def get_cw(st):
 
 def draw_callback_px(context):
     """Draws Code Editors Minimap and indentation marks"""
-    # t = perf_counter()
     text = context.edit_text
     if not text:
         return
@@ -866,15 +855,13 @@ def draw_callback_px(context):
     bgl.glDisable(bgl.GL_BLEND)
     blf.rotation(0, 0)
     blf.disable(0, blf.ROTATION)
-    # t2 = perf_counter()
-    # print("draw:", round((t2 - t) * 1000, 2), "ms")
 
 
 class CodeEditorBase:
     bl_options = {'INTERNAL'}
     @classmethod
     def poll(cls, context):
-        return getattr(context, "edit_text", False)
+        return is_text(context.edit_text)
 
 
 class CE_OT_scroll(CodeEditorBase, Operator):
@@ -950,30 +937,33 @@ class CE_OT_mouse_move(CodeEditorBase, Operator):
 
     @classmethod
     def poll(cls, context):
-        if getattr(context, 'edit_text', False):
+        if is_text(context.edit_text):
             ce = get_ce(context)
-            event = WM_OT_event_catcher(ce.window)
-            if event:
-                ce.update(context, event)
+            # Not optimal. Blender prevents direct opcalls in poll methods.
+            # A solution would be to get mouse coordinates from dna, but this
+            # adds boilerplate and increases code maintenance.
+            mx, my = WM_OT_mouse_catcher.get_mouse(ce.window)
+            if ce.update(context, mx, my):
+                return True
+
+    def invoke(self, context, event):
+        return {'CANCELLED'}
 
 
 # catch the event so it can be accessed outside of operators
-class WM_OT_event_catcher(bpy.types.Operator):
-    bl_idname = "wm.event_catcher"
+class WM_OT_mouse_catcher(bpy.types.Operator):
+    bl_idname = "wm.mouse_catcher"
     bl_label = "Event Catcher"
     bl_options = {'INTERNAL'}
 
-    import _bpy  # use call instead of bpy.ops to reduce overhead
-    call = _bpy.ops.call
-    del _bpy
+    def invoke(self, context, event, *, coords=[-1, -1]):
+        coords[:] = event.mouse_x, event.mouse_y
+        return {'PASS_THROUGH'}
 
-    def __new__(cls, window):
-        timer(cls.call, cls.__name__, {'window': window}, {}, 'INVOKE_DEFAULT')
-        return getattr(cls, 'event', None)
-
-    def invoke(self, context, event):
-        __class__.event = event
-        return {'CANCELLED'}
+    @classmethod
+    def get_mouse(cls, window: bpy.types.Window, coords=invoke.__kwdefaults__['coords']):
+        timer(bpy.ops._op_call, "WM_OT_mouse_catcher", {'window': window}, {}, 'INVOKE_DEFAULT')
+        return coords
 
 
 # main class for storing runtime draw props
@@ -1062,32 +1052,31 @@ class CodeEditorMain:
         return text, wtext.lines
 
     # (hover highlight, minimap refresh, tab activation, text change)
-    def update(self, context, event):
+    def update(self, context, mx: int, my: int):
+        hit = False
         self.validate()
         texts = bpy.data.texts
         hover_text = ""
         ledge = self.ledge
         tab_xmin = ledge - self.tabw
         redraw = False
-        mrx = event.mouse_x - context.region.x
-        mry = event.mouse_y - context.region.y
-        lbound = tab_xmin if self.show_tabs and texts else ledge
+        mrx = mx - context.region.x
+        mry = my - context.region.y
         in_minimap = ledge <= mrx < self.redge and self.opac
-        in_ttab = tab_xmin <= mrx < ledge and self.opac
-
         if context.edit_text.name != self.text_name:
             self.update_text()
 
-        if lbound <= mrx:
+        if (tab_xmin if self.show_tabs and texts else ledge) <= mrx:
+            hit = True
             context.window.cursor_set('DEFAULT')
 
         if in_minimap != self.in_minimap:
             self.in_minimap = in_minimap
             redraw = True
 
-        elif in_ttab:
+        elif tab_xmin <= mrx < ledge and self.opac:
             rh = self.region.height
-            tabh = min(200, int(rh / len(texts)))
+            tabh = int(rh / max(1, len(texts)))
             prev = 0
             for i in range(1, len(texts) + 1):
                 if mry in range(rh - (tabh * i), rh - prev):
@@ -1099,7 +1088,7 @@ class CodeEditorMain:
             redraw = True
         if redraw:
             self.tag_redraw()
-        return {'CANCELLED'}  # prevent view layer update
+        return hit
 
 
 def update_prefs(self, context):
@@ -1135,7 +1124,7 @@ class CE_PT_settings_panel(bpy.types.Panel):  # display settings in header
     bl_ui_units_x = 8
 
     def draw(self, context):
-        if getattr(context, 'edit_text', None):
+        if is_text(context.edit_text):
             ce_props = get_ce(context).props
             layout = self.layout
             layout.prop(ce_props, "show_minimap")
@@ -1280,7 +1269,7 @@ classes = (
     CE_OT_cursor_set,
     CE_OT_scroll,
     CE_PT_settings_panel,
-    WM_OT_event_catcher,
+    WM_OT_mouse_catcher,
     CE_PG_settings
 )
 
