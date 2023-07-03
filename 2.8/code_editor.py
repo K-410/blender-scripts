@@ -17,13 +17,13 @@
 # ##### END GPL LICENSE BLOCK #####
 
 import bpy
-import bgl
+import gpu
 import blf
-from gpu.shader import from_builtin
 from gpu_extras.batch import batch_for_shader
 from bpy.types import Operator
 from collections import defaultdict, deque
 from itertools import repeat
+
 
 bl_info = {
     "name": "Code Editor",
@@ -35,10 +35,39 @@ bl_info = {
     "category": "Text Editor",
 }
 
+
 is_text = bpy.types.Text.__instancecheck__  # Faster than isinstance(x, bpy.types.Text)
-sh_2d = from_builtin('2D_UNIFORM_COLOR')
+
+
+sh_2d_vert = """
+uniform mat4 ModelViewProjectionMatrix;
+in vec2 pos;
+
+void main() {
+    gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.0, 1.0);
+}
+"""
+
+sh_2d_frag = """
+uniform vec4 color;
+out vec4 final_color;
+
+void main() {
+    final_color = color;
+}
+"""
+
+
+sh_2d = gpu.types.GPUShader(sh_2d_vert, sh_2d_frag)
 sh_2d_uniform_float = sh_2d.uniform_float
 sh_2d_bind = sh_2d.bind
+
+
+if bpy.app.version < (4, 0):
+    blf_size = blf.size
+else:
+    def blf_size(font_id, font_size, dpi_unused):
+        blf.size(font_id, font_size)
 
 
 # emulate list of integers with slicing
@@ -685,12 +714,12 @@ def draw_callback_px(context):
     # draw minimap background rectangle
     x = ledge - tabw
     color = (*ce.background, (1 - ce.bg_opacity) * opac)
-    bgl.glEnable(bgl.GL_BLEND)
+    gpu.state.blend_set("ALPHA")
     draw_quads_2d(((x, rh), (redge, rh), (redge, 0), (x, 0)), color)
 
     mmap_enabled = all((opac, ce.show_minimap))
     # draw minimap shadow
-    bgl.glLineWidth(wu2)
+    gpu.state.line_width_set(wu2)
     if mmap_enabled or tabw:
         for idx, intensity in enumerate([.2, .1, .07, .05, .03, .02, .01]):
             color = 0.0, 0.0, 0.0, intensity * opac
@@ -716,7 +745,6 @@ def draw_callback_px(context):
         draw_quads_2d((p1, p2, p3, p4), color)
 
         # draw slider frame
-        bgl.glLineWidth(wu2)
         draw_lines_2d((p1, p2), color_frame)
         draw_lines_2d((p2, p3), color_frame)
         draw_lines_2d((p3, p4), color_frame)
@@ -725,7 +753,7 @@ def draw_callback_px(context):
         # draw minimap symbols
         segments = ce.segments
         mmxoffs = ledge + 4  # minimap x offset
-        bgl.glLineWidth((mlh ** 1.02) - 2)  # scale blocks with line height
+        gpu.state.line_width_set((mlh ** 1.02) - 2)
         for seg in segments:
             seq = deque()
             seq_extend = seq.extend
@@ -767,7 +795,7 @@ def draw_callback_px(context):
                 if show_indents:
                     ymax = rh - lh * (1 + idx - sttop) + lh
                     ymin = ymax - lh
-                    bgl.glLineWidth(wu2)
+                    gpu.state.line_width_set(wu2)
                     if -lh < ymin < rh:
                         x = xoffs + indent * level
                         if x >= _x:
@@ -779,7 +807,7 @@ def draw_callback_px(context):
     if tabw:
         tabh = rh / lent
         fsize = int(tabw * 0.75)
-        blf.size(0, fsize, 72)
+        blf_size(0, fsize, 72)
         blf.enable(0, blf.ROTATION)
         blf.rotation(0, 1.5707963267948966)
         x = int(ledge - tabw / 4)
@@ -796,8 +824,8 @@ def draw_callback_px(context):
             blf.position(0, x, y, 0)
             blf.draw(0, tlabel)
 
-        bgl.glEnable(bgl.GL_BLEND)
-        bgl.glLineWidth(wu2)
+        gpu.state.blend_set("ALPHA")
+        gpu.state.line_width_set(wu2)
         # draw tab hover rects
         if opac:
             x, y = ledge - tabw, rh
@@ -851,8 +879,6 @@ def draw_callback_px(context):
             y -= lh
 
     # restore opengl defaults
-    bgl.glLineWidth(1.0)
-    bgl.glDisable(bgl.GL_BLEND)
     blf.rotation(0, 0)
     blf.disable(0, blf.ROTATION)
 
@@ -932,38 +958,14 @@ class CE_OT_cursor_set(CodeEditorBase, Operator):
 
 # handle mouse events in text editor to support hover and scroll
 class CE_OT_mouse_move(CodeEditorBase, Operator):
+    bl_options = {'INTERNAL'}
     bl_idname = "ce.mouse_move"
     bl_label = "Mouse Move"
 
-    @classmethod
-    def poll(cls, context):
-        if is_text(context.edit_text):
-            ce = get_ce(context)
-            # Not optimal. Blender prevents direct opcalls in poll methods.
-            # A solution would be to get mouse coordinates from dna, but this
-            # adds boilerplate and increases code maintenance.
-            mx, my = WM_OT_mouse_catcher.get_mouse(ce.window)
-            if ce.update(context, mx, my):
-                return True
-
     def invoke(self, context, event):
-        return {'CANCELLED'}
-
-
-# catch the event so it can be accessed outside of operators
-class WM_OT_mouse_catcher(bpy.types.Operator):
-    bl_idname = "wm.mouse_catcher"
-    bl_label = "Event Catcher"
-    bl_options = {'INTERNAL'}
-
-    def invoke(self, context, event, *, coords=[-1, -1]):
-        coords[:] = event.mouse_x, event.mouse_y
+        if is_text(context.edit_text):
+            get_ce(context).update(context, event.mouse_x, event.mouse_y)
         return {'PASS_THROUGH'}
-
-    @classmethod
-    def get_mouse(cls, window: bpy.types.Window, coords=invoke.__kwdefaults__['coords']):
-        timer(bpy.ops._op_call, "WM_OT_mouse_catcher", {'window': window}, {}, 'INVOKE_DEFAULT')
-        return coords
 
 
 # main class for storing runtime draw props
@@ -1003,7 +1005,7 @@ class CodeEditorMain:
         self.autow = True
         wu = get_widget_unit(context)
         lnrs = st.show_line_numbers and len(repr(len(text.lines)))
-        cw = get_cw(st)[0]
+        cw = max(1, get_cw(st)[0])  # Spurious DivideByZeroError
         rw = self.region.width
         self.opac = min(max(0, (rw - self.min_width) * .01), 1)
         if self.show_minimap:
@@ -1269,7 +1271,6 @@ classes = (
     CE_OT_cursor_set,
     CE_OT_scroll,
     CE_PT_settings_panel,
-    WM_OT_mouse_catcher,
     CE_PG_settings
 )
 
