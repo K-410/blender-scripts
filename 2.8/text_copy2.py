@@ -67,9 +67,13 @@ class TEXT_OT_smart_cut_and_copy(bpy.types.Operator):
             bpy.ops.text.move_select(type='NEXT_LINE')
 
             # select until true end if line is soft-wrapped
-            while (text.select_end_character and
-                   text.current_line_index < size - 1):
-                bpy.ops.text.move_select(type='NEXT_LINE')
+            if text.current_line_index < size-1:     
+                while (text.select_end_character and 
+                        text.current_line_index < size -1):
+                    bpy.ops.text.move_select(type='NEXT_LINE')
+            #if no enter after last line (current line index= size)
+            else: 
+                bpy.ops.text.move_select(type='FILE_BOTTOM')
         else:
             cls._whole_line = False
 
