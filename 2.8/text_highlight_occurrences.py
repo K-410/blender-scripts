@@ -1,24 +1,30 @@
 import bpy
+from gpu import state
 from gpu.shader import from_builtin
-from mathutils import Vector
 from gpu_extras.batch import batch_for_shader
+
+from mathutils import Vector
 from itertools import chain
 from collections import deque
 # from time import perf_counter
-from bgl import glLineWidth, glEnable, glDisable, GL_BLEND
 import blf
+if bpy.app.version < (3, 5, 0):
+    from bgl import glLineWidth, glEnable, glDisable, GL_BLEND
 
 bl_info = {
     "name": "Highlight Occurrences",
     "description": "Enables highlighting for words matching selected text",
     "author": "kaio",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (2, 82, 0),
     "location": "Text Editor",
     "category": "Text Editor"
 }
 
-shader = from_builtin('2D_UNIFORM_COLOR')
+if bpy.app.version < (3, 5, 0):
+    shader = from_builtin('2D_UNIFORM_COLOR')
+else:
+    shader = from_builtin('UNIFORM_COLOR')
 shader_uniform_float = shader.uniform_float
 shader_bind = shader.bind
 iterchain = chain.from_iterable
@@ -32,7 +38,7 @@ def get_matches_curl(substr, strlen, find, selr):
     exclude = range(*selr)
     append = match_indices.append
 
-    while idx is not -1:
+    while idx != -1:
         span = idx + strlen
 
         if idx in exclude or span in exclude:
@@ -50,7 +56,7 @@ def get_matches(substr, strlen, find):
     append = match_indices.append
     chr_idx = find(substr, 0)
 
-    while chr_idx is not -1:
+    while chr_idx != -1:
         append(chr_idx)
         chr_idx = find(substr, chr_idx + strlen)
 
@@ -69,15 +75,27 @@ def get_colors(draw_type):
 
 
 def draw_batches(context, batches, colors):
-    glLineWidth(p.line_thickness)
-    shader_bind()
-    glEnable(GL_BLEND)
+    if bpy.app.version < (3, 5, 0):
+        glLineWidth(p.line_thickness)
+        shader_bind()
+        glEnable(GL_BLEND)
 
-    for draw, col in zip(batches, colors):
-        shader_uniform_float("color", [*col])
-        draw(shader)
+        for draw, col in zip(batches, colors):
+            shader_uniform_float("color", [*col])
+            draw(shader)
 
-    glDisable(GL_BLEND)
+        glDisable(GL_BLEND)
+    
+    else:
+        shader_bind()
+        state.blend_set("ALPHA")
+#        region = context.region
+#        shader.uniform_float("viewportSize", (region.width, region.height))
+#        shader.uniform_float("lineWidth", p.line_thickness)        
+        for draw, col in zip(batches, colors):
+            shader_uniform_float("color", [*col])
+            draw(shader)
+        state.blend_set("NONE")
 
 
 def update_colors(self, context):
@@ -222,7 +240,7 @@ def calc_top(lines, maxy, lineh, rh, yoffs, char_max):
                 wrap_offset -= lineh
                 start = end
                 end += char_max
-            elif c is " " or c is "-":
+            elif c == " " or c == "-":
                 end = pos + 1
             pos += 1
     return top, wrap_span_px
